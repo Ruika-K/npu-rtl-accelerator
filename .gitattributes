@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.sv  text eol=lf
+*.svh text eol=lf
+*.f   text eol=lf
+Makefile text eol=lf

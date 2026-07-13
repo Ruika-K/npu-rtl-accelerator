@@ -1,0 +1,31 @@
+# macOS and editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local environment
+.env
+
+# Build and simulation output
+build/
+csrc/
+simv
+simv.daidir/
+ucli.key
+vc_hdrs.h
+DVEfiles/
+inter.vpd
+*.vcd
+*.vpd
+*.fsdb
+*.log
+*.key
+verdiLog/
+novas.conf
+novas.rc
+
+# Coverage output
+urgReport/
+*.vdb/

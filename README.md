@@ -1,4 +1,4 @@
-# NPU from Scratch
+# NPU RTL Accelerator
 
 这是一个从零理解并独立实现 NPU 的个人 SystemVerilog 项目。目标不只是让代码跑起来，也要留下清楚的架构决策、验证过程和可复现的里程碑，最终作为作品集项目展示。
 

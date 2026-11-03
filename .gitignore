@@ -36,3 +36,6 @@ __pycache__/
 
 # Verilator default output dir
 obj_dir/
+
+# Training outputs and datasets (regenerable, large)
+model/out/

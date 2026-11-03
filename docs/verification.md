@@ -9,18 +9,18 @@ Directory `model/`:
 
 | File | Purpose | Depends on |
 | --- | --- | --- |
-| `train_lenet.py` | Trains fp32 LeNet-5 in PyTorch, one checkpoint each for MNIST and CIFAR-10 | torch, torchvision. Optional; simulation runs without it |
-| `quantize.py` | Post-training quantization: symmetric per-tensor weights, activation scale and zero point from calibration min/max; computes RQ_MULT / RQ_SHIFT; folds the zero point into the bias; emits the weight blob, descriptor table and quantization JSON | numpy, reads the checkpoint |
-| `npu_ref.py` | numpy / pure-integer golden model. Implements every formula of `architecture.md` section 3 with integers only; can dump each layer | numpy |
-| `gen_vectors.py` | Picks N test images, emits input hex, expected per-layer output hex and the expected argmax | numpy |
-| `data/<net>/weights.hex`, `desc.json`, `vectors/` | Generated results committed to the repository so that simulation does not need PyTorch | - |
+| `train_lenet.py` | Trains fp32 LeNet-5 with numpy only (im2col convolutions, Adam), one run each for MNIST and CIFAR-10; writes `model/out/<net>/fp32.npz`, `calib.npz`, `test.npz` | numpy; MNIST downloads automatically, CIFAR-10 needs the Toronto archive. Optional: simulation runs without it |
+| `quantize.py` | Post-training quantization: symmetric per-tensor weights, activation range from a calibration set (post-ReLU ranges start at 0); computes RQ_MULT / RQ_SHIFT; folds the zero point into the bias; builds the memory layout and descriptors; writes `model/data/<net>/program.txt`, `net.json` and a float16 copy of the checkpoint | numpy, reads the trainer's output or the committed float16 checkpoint |
+| `npu_ref.py` | Pure-integer golden model: requant, GEMM, conv2d / fc / maxpool / argmax layers, memory-image helpers, descriptor checks, and `run_program`, which executes a descriptor list against the two memories exactly like the hardware | none |
+| `gen_requant_vectors.py`, `gen_gemm_vectors.py`, `gen_desc_vectors.py`, `gen_layer_vectors.py` | Unit and single-layer vectors generated into `build/` at build time | none |
+| `data/<net>/program.txt` | Committed: descriptors, the weight-buffer image, 100 test images with the integer model's prediction and label, and every layer's output bytes for the first two images | - |
 
 Rules:
 
 - `npu_ref.py` is the only source of truth. PyTorch only produces weights; every expected value after that comes from the integer model.
 - Committed data files are generated with a fixed random seed; the scripts can regenerate them and the result can be diffed.
-- Committed data stays under 1 MB. Unit-level random vectors (such as the 100k requant vectors from
-  `gen_requant_vectors.py`) are generated into `build/` at build time and are not committed.
+- Committed data stays small: one `program.txt` per network (weights, 100 images, two full traces) plus the
+  float16 checkpoint. Unit-level random vectors are generated into `build/` at build time and are not committed.
 - `model/test_npu_ref.py` holds hand-computed cases and runs with `make model-test`; the same hand-computed values
   are repeated in the matching SystemVerilog testbench, giving a four-way cross-check:
   hand calculation, Python, SV reference function, RTL.
@@ -48,10 +48,13 @@ Rules:
    read back and compared with the golden model; ARGMAX checked through RESULT and LOGITS. (M4)
 2. Around the cases: ID, an error descriptor in layer 1 of a 2-layer program (ERR, ERR_CODE, CUR_LAYER) followed by
    normal runs, a host memory read rejected while busy with HOST_CONFLICT, perf counters, DONE W1C and irq. (M4)
-3. Full 8-layer LeNet-5 on MNIST: read back and compare layer by layer; then run 100 images and require the
-   accuracy to equal that of `npu_ref.py` exactly. (M5)
-4. LeNet-5 on CIFAR-10: same, with the other data files. (M5)
-5. Error injection: at least one case per error code. (M3 unit level, M5 at the top)
+3. Full 8-layer LeNet-5 (`tb/integration/npu_lenet_tb.sv`, `make integ-<net>`): weights and descriptors loaded
+   once, then per image the input is written, the run started and RESULT compared with the integer model's
+   prediction; every prediction must agree (bit-exact end to end, not merely the same accuracy). For the first two
+   images every layer's output region is read back and compared byte for byte. The per-layer cycle counts of the
+   first image are printed for the README table. (M5, MNIST; CIFAR-10 with its own data files)
+4. Error injection: at least one case per error code at the unit level (M3) and an error descriptor with recovery
+   at the top level (M4).
 
 ### 2.3 Assertions (SVA in `tb/common/`, bound to the RTL)
 
@@ -93,5 +96,5 @@ Constraints:
 | M2 | `systolic_array` is bit-exact on 200 random GEMMs, including K < 8 and K > 256 |
 | M3 | `axil_slave`, `npu_regs` and `npu_sequencer` unit testbenches pass; every error code is covered; descriptor checks agree with the Python model |
 | M4 | Single-layer CONV2D / FC / MAXPOOL / ARGMAX cases are bit-exact at the engine level and through AXI4-Lite at the top level |
-| M5 | LeNet-5 on MNIST and CIFAR-10 is bit-exact end to end; accuracy equals the golden model; CI green; README has the performance table |
+| M5 | LeNet-5 is bit-exact end to end on every tested image (MNIST; CIFAR-10 once its training data is available); CI green; README has the performance table |
 | M6 | Optional items each define their own: DMA integration testbench, chip_top CDC testbench, FPGA synthesis report |

@@ -214,6 +214,29 @@ module npu_regs
   assign dma_start_c = wr_req_i && (wr_tgt_c == TGT_REG) && (wr_off_c == REG_DMA_CTRL) &&
                        wr_strb_i[0] && wr_data_i[0] && !busy_i && !dma_busy_i;
 
+  // Descriptor table in its own process: one decoded enable per stored byte,
+  // so every flow maps it to plain clock-enabled flip-flops. The window does
+  // not overlap any other register offset. W10 .. W15 are not stored.
+  logic desc_wr_c;
+  assign desc_wr_c = wr_req_i && (wr_tgt_c == TGT_REG) &&
+                     (wr_off_c >= REG_DESC_BASE) && (wr_off_c < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4));
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      desc_words_q <= '0;
+    end else if (desc_wr_c) begin
+      for (int i = 0; i < NUM_DESC; i++) begin
+        for (int w = 0; w < DESC_USED_WORDS; w++) begin
+          for (int b = 0; b < 4; b++) begin
+            if (desc_idx_c == 4'(i) && desc_word_c == 4'(w) && wr_strb_i[b]) begin
+              desc_words_q[i][w][8*b +: 8] <= desc_wdata_c[8*b +: 8];
+            end
+          end
+        end
+      end
+    end
+  end
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       wr_ack_o        <= 1'b0;
@@ -239,7 +262,6 @@ module npu_regs
       result_valid_q  <= 1'b0;
       result_idx_q    <= '0;
       logits_q        <= '0;
-      desc_words_q    <= '0;
       dma_start_o     <= 1'b0;
       dma_dir_o       <= 1'b0;
       dma_dst_sel_o   <= 1'b0;
@@ -323,18 +345,8 @@ module npu_regs
                 if (wr_data_i[1] && !dma_done_i) dma_done_q <= 1'b0;
                 if (wr_data_i[2] && !dma_err_i)  dma_err_q  <= 1'b0;
               end
-            end else if (wr_off_c >= REG_DESC_BASE && wr_off_c < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4)) begin
-              // decoded per-word, per-byte enables (W10 .. W15 are not stored)
-              for (int i = 0; i < NUM_DESC; i++) begin
-                for (int w = 0; w < DESC_USED_WORDS; w++) begin
-                  for (int b = 0; b < 4; b++) begin
-                    if (desc_idx_c == 4'(i) && desc_word_c == 4'(w) && wr_strb_i[b]) begin
-                      desc_words_q[i][w][8*b +: 8] <= desc_wdata_c[8*b +: 8];
-                    end
-                  end
-                end
-              end
             end
+            // descriptor words: written by the process above
             // other offsets: read-only or undefined, write ignored
           end
           TGT_ABUF, TGT_WBUF: begin

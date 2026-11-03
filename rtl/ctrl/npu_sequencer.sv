@@ -60,72 +60,87 @@ module npu_sequencer
     return (17'(c) + 17'(ARR_N - 1)) & ~17'(ARR_N - 1);
   endfunction
 
+  // One datapath for every op: the operands that differ between ops are
+  // selected first, so each product is built once (ARGMAX and FC are 1x1
+  // images, MAXPOOL halves the size and keeps C_in). The error is then picked
+  // in the documented order: BAD_OP, BAD_PARAM, BAD_OUT_DIM, BAD_ADDR.
+  // All widths are exact, so no sum or product can wrap.
   function automatic err_e check_desc(input desc_t d);
+    logic        is_conv, is_fc, is_pool, is_argmax, is_mac;
     logic [3:0]  k, pad;
-    logic [15:0] in_h, in_w;
+    logic [15:0] in_h, in_w, c_out_eff;
     logic [16:0] oh, ow, n_pad;
     logic [21:0] k_total;                 // c_in (16) * k*k (6)
-    logic [31:0] in_hw, out_hw;
-    logic [48:0] in_end, out_end, w_end, b_end;
+    logic [31:0] in_hw;
+    logic [33:0] out_hw;
+    logic [48:0] in_end;
+    logic [50:0] out_end;
+    logic [48:0] w_end, b_end;
+    logic        param_err, dim_err, addr_err;
     // Zero points are int8 by construction and have no further constraint.
     /* verilator lint_off UNUSEDSIGNAL */
     logic [15:0] unused_zp;
     /* verilator lint_on UNUSEDSIGNAL */
     unused_zp = {d.z_in, d.z_out};
 
-    case (d.op)
-      OP_NOP:                                        return ERR_NONE;
-      OP_CONV2D, OP_FC, OP_MAXPOOL2X2, OP_ARGMAX:    ;
-      default:                                       return ERR_BAD_OP;
-    endcase
+    is_conv   = (d.op == OP_CONV2D);
+    is_fc     = (d.op == OP_FC);
+    is_pool   = (d.op == OP_MAXPOOL2X2);
+    is_argmax = (d.op == OP_ARGMAX);
+    is_mac    = is_conv || is_fc;
 
-    if (d.op == OP_ARGMAX) begin
-      if (d.c_in == 16'd0 || d.c_in > 16'(MAX_ARGMAX_C)) return ERR_BAD_PARAM;
-      in_end = 49'(d.in_base) + 49'(d.c_in);
-      if (in_end > 49'(ABUF_BYTES)) return ERR_BAD_ADDR;
-      return ERR_NONE;
+    // operands
+    k         = is_conv ? d.k   : 4'd1;
+    pad       = is_conv ? d.pad : 4'd0;
+    in_h      = (is_fc || is_argmax) ? 16'd1 : d.in_h;
+    in_w      = (is_fc || is_argmax) ? 16'd1 : d.in_w;
+    c_out_eff = is_pool ? d.c_in : d.c_out;
+    if (is_pool) begin
+      oh = {2'b00, in_h[15:1]};
+      ow = {2'b00, in_w[15:1]};
+    end else begin
+      oh = 17'(in_h) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;   // only used when dim_err is clear
+      ow = 17'(in_w) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;
     end
-
-    if (d.op == OP_MAXPOOL2X2) begin
-      if (d.c_in == 16'd0) return ERR_BAD_PARAM;
-      if (d.in_h < 16'd2 || d.in_w < 16'd2) return ERR_BAD_OUT_DIM;
-      oh      = {2'b00, d.in_h[15:1]};
-      ow      = {2'b00, d.in_w[15:1]};
-      in_hw   = 32'(d.in_h) * 32'(d.in_w);
-      out_hw  = 32'(oh) * 32'(ow);
-      in_end  = 49'(d.in_base) + 49'(in_hw) * 49'(d.c_in);
-      out_end = 49'(d.out_base) + 49'(out_hw) * 49'(d.c_in);
-      if (in_end > 49'(ABUF_BYTES) || out_end > 49'(ABUF_BYTES)) return ERR_BAD_ADDR;
-      return ERR_NONE;
-    end
-
-    // CONV2D and FC
-    k    = (d.op == OP_FC) ? 4'd1 : d.k;
-    pad  = (d.op == OP_FC) ? 4'd0 : d.pad;
-    in_h = (d.op == OP_FC) ? 16'd1 : d.in_h;
-    in_w = (d.op == OP_FC) ? 16'd1 : d.in_w;
-    if (k == 4'd0 || k > 4'(MAX_KERNEL)) return ERR_BAD_PARAM;
-    if (pad > 4'(MAX_PAD)) return ERR_BAD_PARAM;
-    if (d.op == OP_CONV2D && d.stride_m1 != 2'd0) return ERR_BAD_PARAM;
-    if (d.c_in == 16'd0 || d.c_out == 16'd0) return ERR_BAD_PARAM;
-    k_total = 22'(d.c_in) * 22'(k) * 22'(k);
-    if (k_total > 22'(MAX_K_TOTAL)) return ERR_BAD_PARAM;
-    if (d.rq_shift == 6'd0 || d.rq_shift == 6'd63) return ERR_BAD_PARAM;       // documented range 1..62
-    if (d.rq_mult[31] != 1'b0 || d.rq_mult[30] != 1'b1) return ERR_BAD_PARAM;   // [2^30, 2^31)
-    if (d.act_min > d.act_max) return ERR_BAD_PARAM;                            // signed compare
-    if (17'(in_h) + 17'(pad) * 17'd2 < 17'(k) || 17'(in_w) + 17'(pad) * 17'd2 < 17'(k)) return ERR_BAD_OUT_DIM;
-    oh      = 17'(in_h) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;
-    ow      = 17'(in_w) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;
     n_pad   = pad_to_arr(d.c_out);
-    if (d.w_base[2:0] != 3'b000 || d.b_base[2:0] != 3'b000) return ERR_BAD_ADDR;   // both 8-byte aligned
+    k_total = 22'(d.c_in) * 22'(k) * 22'(k);
+
+    // sizes and end addresses (one product each)
     in_hw   = 32'(in_h) * 32'(in_w);
-    out_hw  = 32'(oh) * 32'(ow);
+    out_hw  = 34'(oh) * 34'(ow);
     in_end  = 49'(d.in_base) + 49'(in_hw) * 49'(d.c_in);
-    out_end = 49'(d.out_base) + 49'(out_hw) * 49'(d.c_out);
+    out_end = 51'(d.out_base) + 51'(out_hw) * 51'(c_out_eff);
     w_end   = 49'(d.w_base) + 49'(k_total) * 49'(n_pad);
     b_end   = 49'(d.b_base) + 49'(n_pad) * 49'd4;
-    if (in_end > 49'(ABUF_BYTES) || out_end > 49'(ABUF_BYTES)) return ERR_BAD_ADDR;
-    if (w_end > 49'(WBUF_BYTES) || b_end > 49'(WBUF_BYTES)) return ERR_BAD_ADDR;
+
+    // checks per class, in the documented order inside each class
+    if (is_argmax) begin
+      param_err = (d.c_in == 16'd0) || (d.c_in > 16'(MAX_ARGMAX_C));
+      dim_err   = 1'b0;
+      addr_err  = (in_end > 49'(ABUF_BYTES));
+    end else if (is_pool) begin
+      param_err = (d.c_in == 16'd0);
+      dim_err   = (d.in_h < 16'd2) || (d.in_w < 16'd2);
+      addr_err  = (in_end > 49'(ABUF_BYTES)) || (out_end > 51'(ABUF_BYTES));
+    end else begin
+      param_err = (k == 4'd0) || (k > 4'(MAX_KERNEL)) || (pad > 4'(MAX_PAD))
+               || (is_conv && d.stride_m1 != 2'd0)
+               || (d.c_in == 16'd0) || (d.c_out == 16'd0)
+               || (k_total > 22'(MAX_K_TOTAL))
+               || (d.rq_shift == 6'd0) || (d.rq_shift == 6'd63)              // documented range 1..62
+               || (d.rq_mult[31] != 1'b0) || (d.rq_mult[30] != 1'b1)        // [2^30, 2^31)
+               || (d.act_min > d.act_max);                                    // signed compare
+      dim_err   = (17'(in_h) + 17'(pad) * 17'd2 < 17'(k)) || (17'(in_w) + 17'(pad) * 17'd2 < 17'(k));
+      addr_err  = (d.w_base[2:0] != 3'b000) || (d.b_base[2:0] != 3'b000)     // both 8-byte aligned
+               || (in_end > 49'(ABUF_BYTES)) || (out_end > 51'(ABUF_BYTES))
+               || (w_end > 49'(WBUF_BYTES)) || (b_end > 49'(WBUF_BYTES));
+    end
+
+    if (d.op == OP_NOP)                 return ERR_NONE;
+    if (!is_mac && !is_pool && !is_argmax) return ERR_BAD_OP;
+    if (param_err)                      return ERR_BAD_PARAM;
+    if (dim_err)                        return ERR_BAD_OUT_DIM;
+    if (addr_err)                       return ERR_BAD_ADDR;
     return ERR_NONE;
   endfunction
 

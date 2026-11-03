@@ -98,3 +98,38 @@ def pe_tile(a_seq, w_seq):
         acc = pe_mac(acc, a, w, k == 0)
     _check_int32("acc", acc)
     return acc
+
+
+def matmul_int(a, w):
+    """Out[M][N] = In[M][K] x W[K][N] with exact integer arithmetic.
+
+    This is what the systolic array computes tile by tile (architecture.md 5.1):
+    each output element is one PE's accumulator after K beats. Inputs are lists
+    of lists of int8; the result is checked to fit int32.
+    """
+    m_rows = len(a)
+    k_len = len(a[0]) if m_rows else 0
+    if any(len(row) != k_len for row in a):
+        raise ValueError("ragged In matrix")
+    if len(w) != k_len:
+        raise ValueError("K mismatch between In and W")
+    n_cols = len(w[0]) if k_len else 0
+    if any(len(row) != n_cols for row in w):
+        raise ValueError("ragged W matrix")
+    for row in a:
+        for v in row:
+            _check_int8("a", v)
+    for row in w:
+        for v in row:
+            _check_int8("w", v)
+    out = []
+    for m in range(m_rows):
+        out_row = []
+        for n in range(n_cols):
+            acc = 0
+            for k in range(k_len):
+                acc += a[m][k] * w[k][n]
+            _check_int32("acc", acc)
+            out_row.append(acc)
+        out.append(out_row)
+    return out

@@ -26,7 +26,7 @@ reproduce with open-source tools.
 ├── rtl/                     # Synthesizable SystemVerilog
 │   ├── npu_pkg.sv           # Parameters, encodings, descriptor type
 │   ├── npu_top.sv
-│   └── compute/             # requant_unit, pe (host/, ctrl/, mem/ follow in later milestones)
+│   └── compute/             # requant_unit, pe, systolic_array (host/, ctrl/, mem/ follow later)
 ├── tb/
 │   ├── common/              # SV reference functions mirroring the Python model
 │   ├── unit/                # One self-checking testbench per module
@@ -72,8 +72,8 @@ make vcs-unit-pe
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches, Verilator CI | Done |
-| M2 | `systolic_array` GEMM checked against numpy | Next |
-| M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | |
+| M2 | `systolic_array` GEMM checked against the Python integer model | Done |
+| M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Next |
 | M4 | `act_buffer`, `weight_buffer`, `conv_addr_gen`, `conv_engine`, `pool_engine`, `argmax_engine`; single layers bit-exact | |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, performance table | |
 | M6 | Optional: AXI4 master DMA, `chip_top` (CDC, configuration bridge, clock gating), FPGA synthesis numbers | |

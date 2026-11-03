@@ -22,17 +22,19 @@ SEED      ?= 1
 
 # Units: RTL module names that have tb/unit/<module>_tb.sv and
 # sim/filelists/unit_<module>.f
-UNITS     ?= requant_unit pe
-LINT_TOPS ?= npu_top requant_unit pe
+UNITS     ?= requant_unit pe systolic_array
+LINT_TOPS ?= npu_top requant_unit pe systolic_array
 
 RTL_F     ?= sim/filelists/rtl.f
 TOP       ?= npu_top_tb
 FILELIST  ?= sim/filelists/tb.f
 
 REQUANT_N ?= 100000
+GEMM_N    ?= 30
 VEC_DIR   := $(BUILD_DIR)/vectors
 REQUANT_VECTORS := $(VEC_DIR)/requant_s$(SEED)_n$(REQUANT_N).txt
-PLUSARGS  ?= +seed=$(SEED) +vectors=$(abspath $(REQUANT_VECTORS))
+GEMM_VECTORS    := $(VEC_DIR)/gemm_s$(SEED)_n$(GEMM_N).txt
+PLUSARGS  ?= +seed=$(SEED) +vectors=$(abspath $(REQUANT_VECTORS)) +gemm_vectors=$(abspath $(GEMM_VECTORS))
 
 VERILATOR_LINT_FLAGS ?= --lint-only -Wall --timescale 1ns/1ps
 VERILATOR_SIM_FLAGS  ?= --binary --timing -Wall -Wno-fatal --timescale 1ns/1ps -j 0 \
@@ -60,11 +62,15 @@ lint-%:
 model-test:
 	$(PYTHON) model/test_npu_ref.py
 
-vectors: $(REQUANT_VECTORS)
+vectors: $(REQUANT_VECTORS) $(GEMM_VECTORS)
 
 $(REQUANT_VECTORS): model/gen_requant_vectors.py model/npu_ref.py
 	mkdir -p $(VEC_DIR)
 	$(PYTHON) model/gen_requant_vectors.py --n $(REQUANT_N) --seed $(SEED) -o $@
+
+$(GEMM_VECTORS): model/gen_gemm_vectors.py model/npu_ref.py
+	mkdir -p $(VEC_DIR)
+	$(PYTHON) model/gen_gemm_vectors.py --n $(GEMM_N) --seed $(SEED) -o $@
 
 # ---------------------------------------------------------------------------
 # Verilator simulation

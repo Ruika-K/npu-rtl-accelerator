@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M1 complete: `requant_unit`, `pe`, the requant part of the Python golden model, Verilator CI. Next: M2, the systolic array.
+M2 complete: `systolic_array` verified against the Python GEMM model. Next: M3, the AXI4-Lite host interface, register file and sequencer.
 
 ## Completed
 
@@ -21,12 +21,19 @@ M1 complete: `requant_unit`, `pe`, the requant part of the Python golden model, 
   - Flow: Makefile targets `lint` / `model-test` / `vectors` / `unit` / `smoke` / `ci` and `vcs-unit-<module>`;
     one filelist per unit testbench; GitHub Actions runs `make ci`.
 
+- M2 (2026-11-03):
+  - RTL: `rtl/compute/systolic_array.sv`: N x N grid of `pe`, per-row and per-column input skew, column drain
+    from the shadow registers through a mux, `P >= N` tile-period contract. Lint clean under `-Wall`.
+  - Model: `matmul_int` in `model/npu_ref.py`; `model/gen_gemm_vectors.py` (9 directed + random GEMM cases).
+  - Testbench: `tb/unit/systolic_array_tb.sv` drives GEMMs tile by tile exactly as `conv_engine` will and checks
+    data, column order, drain continuity and the exact drain start cycle.
+
 ## Milestone plan
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches | Done |
-| M2 | `systolic_array` GEMM checked against numpy | Not started |
+| M2 | `systolic_array` GEMM checked against the Python integer model | Done |
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Not started |
 | M4 | `act_buffer`, `weight_buffer`, `conv_addr_gen`, `conv_engine`, `pool_engine`, `argmax_engine`; single layers bit-exact | Not started |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | Not started |
@@ -44,12 +51,18 @@ M1 complete: `requant_unit`, `pe`, the requant part of the Python golden model, 
 | 2026-11-03 | Verilator 5.020 | Negative test: one Python vector's expected value corrupted | Testbench reports FAIL, proving the checker works |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` | All pass; this is the full GitHub Actions flow |
 | 2026-11-03 | Verilator 5.020 | `make smoke` | SMOKE PASS |
+| 2026-11-03 | Verilator 5.020 | `make unit-systolic_array` (seed 1) | PASS, 250 GEMM cases (11 directed, 200 random, 39 Python), 2343 tiles, 110113 elements checked; drain start cycle exact in every tile |
+| 2026-11-03 | Verilator 5.020 | `make unit-systolic_array SEED=7` | PASS with regenerated Python vectors |
+| 2026-11-03 | Verilator 5.020 | Negative test: one Python GEMM expected value corrupted | Testbench reports FAIL (SV-vs-Python cross-check) |
+| 2026-11-03 | Verilator 5.020 | Negative test: testbench copy with one expected matrix element off by one | Monitor reports the mismatching element in every case (RTL-vs-expected check) |
+| 2026-11-03 | Verilator 5.020 | `make clean && make ci` after M2 | All pass |
 
 ## Next steps
 
-1. M2: `rtl/compute/systolic_array.sv` with edge skew, shadow column drain and the `P = max(K_total, ARR_N)` idle-cycle rule;
-   a GEMM reference in `model/npu_ref.py`; a unit testbench covering K from 1 to 512 and M both a multiple of 8 and not.
-2. Run `make vcs-unit-requant_unit` and `make vcs-unit-pe` with VCS and record the results in the table below.
+1. M3: `rtl/host/axil_slave.sv` (AXI4-Lite to the internal req/ack bus), `rtl/host/npu_regs.sv` (registers,
+   descriptor table, perf counters, host routing to on-chip memory), `rtl/ctrl/npu_sequencer.sv` (layer loop,
+   error checks); unit testbenches with an AXI4-Lite driver task library in `tb/common/`, every error code covered.
+2. Run `make vcs-unit-<module>` for requant_unit, pe and systolic_array with VCS and record the results in the table below.
 
 ## Known limitations
 

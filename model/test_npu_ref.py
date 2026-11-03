@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hand-computed checks for model/npu_ref.py. Run: python3 model/test_npu_ref.py"""
-from npu_ref import INT32_MAX, INT32_MIN, pe_tile, quantize_multiplier, requant
+from npu_ref import INT32_MAX, INT32_MIN, matmul_int, pe_tile, quantize_multiplier, requant
 
 HALF = 1 << 30   # with shift 31 this is an exact x0.5 multiplier
 
@@ -43,6 +43,10 @@ def main():
         mult, shift = quantize_multiplier(m0)
         assert (1 << 30) <= mult < (1 << 31), (m0, mult)
         assert abs(mult / (1 << shift) - m0) <= m0 * 2 ** -30, (m0, mult, shift)
+
+    assert matmul_int([[1, 2], [3, 4]], [[5, 6], [7, 8]]) == [[19, 22], [43, 50]]
+    assert matmul_int([[-128] * 512], [[-128]] * 512) == [[512 * 16384]]
+    assert matmul_int([[127, -128]], [[-128, 127], [127, -128]]) == [[-32512, 32513]]
 
     print("PASS: test_npu_ref")
 

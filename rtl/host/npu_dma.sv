@@ -1,7 +1,7 @@
 `default_nettype none
 
 // AXI4 master DMA between external memory and the on-chip buffers
-// (docs/architecture.md section 12, registers in programming_model.md section 8).
+// (docs/architecture.md section 12, registers in programming_model.md section 7).
 //
 // One transfer per start: len_i bytes from src_i (external) to dst (buffer
 // dst_sel_i at byte offset dst_off_i) when dir_i = 0 (load), or from the

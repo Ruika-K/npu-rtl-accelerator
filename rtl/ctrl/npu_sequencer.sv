@@ -160,8 +160,19 @@ module npu_sequencer
   err_e  eng_err_code_c;
   logic  start_ok_c;
 
-  assign cur_desc_c = desc_i[cur_q];
-  assign check_c    = check_desc(cur_desc_c);
+  // One-hot AND-OR select of the current descriptor. A plain desc_i[cur_q]
+  // means the same thing, but some flows (sv2v + Yosys) flatten the array and
+  // build a barrel shifter for a variable index whose stride is not a power of
+  // two, at roughly ten times the area of this mux.
+  always_comb begin
+    logic [$bits(desc_t)-1:0] sel;
+    sel = '0;
+    for (int i = 0; i < NUM_DESC; i++) begin
+      sel |= desc_i[i] & {$bits(desc_t){cur_q == 4'(i)}};
+    end
+    cur_desc_c = desc_t'(sel);
+  end
+  assign check_c = check_desc(cur_desc_c);
   assign start_ok_c = start_i && (state_q == S_IDLE) && (layer_cnt_i != 5'd0) && (layer_cnt_i <= 5'(NUM_DESC));
 
   always_comb begin
@@ -268,6 +279,17 @@ module npu_sequencer
   // ---------------------------------------------------------------------------
   // Performance counters
   // ---------------------------------------------------------------------------
+  // One incrementer on the selected layer counter, written back with a decoded
+  // enable (same reason as the descriptor select above).
+  logic [31:0] layer_cycles_inc_c;
+  always_comb begin
+    layer_cycles_inc_c = '0;
+    for (int i = 0; i < NUM_DESC; i++) begin
+      layer_cycles_inc_c |= layer_cycles_o[i] & {32{cur_q == 4'(i)}};
+    end
+    layer_cycles_inc_c = layer_cycles_inc_c + 32'd1;
+  end
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       layer_cycles_o      <= '0;
@@ -279,7 +301,9 @@ module npu_sequencer
       array_busy_cycles_o <= '0;
     end else if (busy_q) begin
       total_cycles_o       <= total_cycles_o + 32'd1;
-      layer_cycles_o[cur_q] <= layer_cycles_o[cur_q] + 32'd1;
+      for (int i = 0; i < NUM_DESC; i++) begin
+        if (cur_q == 4'(i)) layer_cycles_o[i] <= layer_cycles_inc_c;
+      end
       if (array_valid_i) array_busy_cycles_o <= array_busy_cycles_o + 32'd1;
     end
   end

@@ -119,6 +119,30 @@ module npu_regs
   // ---------------------------------------------------------------------------
   // Register read mux
   // ---------------------------------------------------------------------------
+  // The descriptor table and the layer counters are read through one-hot AND-OR
+  // muxes. A variable index such as desc_words_q[idx][word] means the same, but
+  // some flows (sv2v + Yosys) flatten the 2-D array and build a barrel shifter
+  // over all 5120 bits for it, at several times the area of this mux.
+  function automatic logic [31:0] desc_word_read(input logic [3:0] idx, input logic [3:0] word);
+    logic [31:0] r;
+    r = '0;
+    for (int i = 0; i < NUM_DESC; i++) begin
+      for (int w = 0; w < DESC_USED_WORDS; w++) begin
+        r |= desc_words_q[i][w] & {32{idx == 4'(i) && word == 4'(w)}};
+      end
+    end
+    return r;   // W10 .. W15 read as 0
+  endfunction
+
+  function automatic logic [31:0] layer_cycles_read(input logic [3:0] idx);
+    logic [31:0] r;
+    r = '0;
+    for (int i = 0; i < NUM_DESC; i++) begin
+      r |= layer_cycles_i[i] & {32{idx == 4'(i)}};
+    end
+    return r;
+  endfunction
+
   function automatic logic [31:0] reg_read(input logic [11:0] a);
     logic [7:0]  woff;   // word offset inside a block
     logic [3:0]  idx;
@@ -127,7 +151,7 @@ module npu_regs
       woff = 8'((a - REG_DESC_BASE) >> 2);
       idx  = woff[7:4];
       word = woff[3:0];
-      return (word < 4'(DESC_USED_WORDS)) ? desc_words_q[idx][word] : 32'h0;
+      return desc_word_read(idx, word);
     end
     if (a >= REG_LOGITS_BASE && a < REG_LOGITS_BASE + 12'(NUM_LOGITS * 4)) begin
       idx = 4'((a - REG_LOGITS_BASE) >> 2);
@@ -135,7 +159,7 @@ module npu_regs
     end
     if (a >= REG_PERF_LAYER_BASE && a < REG_PERF_LAYER_BASE + 12'(NUM_DESC * 4)) begin
       idx = 4'((a - REG_PERF_LAYER_BASE) >> 2);
-      return layer_cycles_i[idx];
+      return layer_cycles_read(idx);
     end
     case (a)
       REG_ID:              return NPU_ID;
@@ -179,6 +203,11 @@ module npu_regs
   assign desc_woff_c = 8'((wr_off_c - REG_DESC_BASE) >> 2);
   assign desc_idx_c  = desc_woff_c[7:4];
   assign desc_word_c = desc_woff_c[3:0];
+  // Write data of a descriptor word with its reserved bits cleared. Stored words
+  // always have them cleared, so writing only the strobed bytes is the same as
+  // merging with the old word and masking.
+  logic [31:0] desc_wdata_c;
+  assign desc_wdata_c = wr_data_i & desc_word_mask(32'(desc_word_c));
   assign start_c     = wr_req_i && (wr_tgt_c == TGT_REG) && (wr_off_c == REG_CTRL) &&
                        wr_strb_i[0] && wr_data_i[0] && !busy_i && !dma_busy_i;
   logic dma_start_c;
@@ -295,9 +324,15 @@ module npu_regs
                 if (wr_data_i[2] && !dma_err_i)  dma_err_q  <= 1'b0;
               end
             end else if (wr_off_c >= REG_DESC_BASE && wr_off_c < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4)) begin
-              if (desc_word_c < 4'(DESC_USED_WORDS)) begin
-                desc_words_q[desc_idx_c][desc_word_c] <=
-                    merge(desc_words_q[desc_idx_c][desc_word_c], wr_data_i, wr_strb_i) & desc_word_mask(32'(desc_word_c));
+              // decoded per-word, per-byte enables (W10 .. W15 are not stored)
+              for (int i = 0; i < NUM_DESC; i++) begin
+                for (int w = 0; w < DESC_USED_WORDS; w++) begin
+                  for (int b = 0; b < 4; b++) begin
+                    if (desc_idx_c == 4'(i) && desc_word_c == 4'(w) && wr_strb_i[b]) begin
+                      desc_words_q[i][w][8*b +: 8] <= desc_wdata_c[8*b +: 8];
+                    end
+                  end
+                end
               end
             end
             // other offsets: read-only or undefined, write ignored

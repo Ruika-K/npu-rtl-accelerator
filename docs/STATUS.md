@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M6 in progress: the open-source synthesis flow runs in CI (numbers in `docs/synthesis.md`), and `chip_top` wraps the core with reset synchronizers, a clock gate, an APB bridge and a pixel stream crossing clock domains, verified with two clocks. CIFAR-10 still waits for its dataset. Next: AXI4 master DMA.
+M6 in progress: `chip_top` (reset synchronizers, clock gate, APB bridge, pixel stream across clock domains) and the AXI4 master DMA are done and verified. The open-source synthesis flow runs in CI; the xc7 resource report works, but the default configuration does not fit the ECP5-85k (LUT4 at 173%), so the area is being reduced before the numbers go into `docs/synthesis.md`. CIFAR-10 still waits for its dataset.
 
 ## Completed
 
@@ -65,7 +65,7 @@ M6 in progress: the open-source synthesis flow runs in CI (numbers in `docs/synt
     run, compare the class with the model; layer traces byte for byte; perf counters printed.
   - README performance table from the counters: 18635 cycles per image, 35% of peak.
 
-- M6 (2026-11-03), first two items:
+- M6 (2026-11-03):
   - Synthesis: `synth/` scripts and `.github/workflows/synth.yml` (sv2v + Yosys `synth_xilinx` for resources,
     Yosys `synth_ecp5` + nextpnr-ecp5 for a post-route Fmax), results in `docs/synthesis.md`.
   - `rtl/chip/`: `rst_sync`, `clk_gate`, `cdc_sync`, `async_fifo` (Gray pointers), `apb2axil`, `pix_writer`,
@@ -73,6 +73,12 @@ M6 in progress: the open-source synthesis flow runs in CI (numbers in `docs/synt
   - Testbenches: `tb/unit/async_fifo_tb.sv` (six clock ratios, 24k words), `tb/unit/pix_writer_tb.sv` (208 frames),
     `tb/integration/chip_top_tb.sv` (`make integ-chip`: APB loads the program, frames on the pixel clock, a frame
     during a run, rude source, clock gate; 5 MNIST images agree with the model).
+  - DMA: `rtl/host/npu_dma.sv` (AXI4 master, 64-bit INCR bursts of up to 16 beats, no 4 KB crossing, load and
+    store for both buffers, parameter and response errors), five DMA registers in `npu_regs`, DMA and program
+    execution mutually exclusive; `npu_top` and `chip_top` expose the AXI4 master port.
+  - Testbenches: `tb/common/axi4_slave_mem.sv` (byte-array memory, random stalls, error window, protocol checks);
+    a DMA phase in `npu_top_tb` (operands of the largest conv and FC cases loaded by DMA, layer run, output stored
+    and compared, host conflict, both error codes).
 
 ## Milestone plan
 
@@ -83,7 +89,7 @@ M6 in progress: the open-source synthesis flow runs in CI (numbers in `docs/synt
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | MNIST done; CIFAR-10 pending dataset |
-| M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | Synthesis and chip_top done, DMA not started |
+| M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | chip_top and DMA done; synthesis flow done, area reduction for ECP5 in progress |
 
 ## Verification evidence
 
@@ -121,13 +127,17 @@ M6 in progress: the open-source synthesis flow runs in CI (numbers in `docs/synt
 | 2026-11-03 | Verilator 5.020 | `make unit-async_fifo`, `make unit-pix_writer` (seeds 1 and 7) | PASS: 24005 words over six clock ratios; 208 frames incl. sof errors |
 | 2026-11-03 | Verilator 5.020 | `make integ-chip` | PASS: 5 images through APB and the pixel stream agree with the model; back-pressure, clock gate, SOF_ERR, OVERRUN checked |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after chip_top | 16 testbenches pass, 106 s |
+| 2026-11-03 | Verilator 5.020 | `make integ-layers` with the DMA phase | PASS: 68 cases, 22068 checks; 385 AR and 3 AW bursts, zero protocol errors, DMA error codes 2 and 3 |
+| 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the DMA | 16 testbenches pass, 106 s |
+| 2026-11-03 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | `make synth-ecp5` | Fails in placement: TRELLIS_COMB 145254 of 83640 (173%), FF 15508, DP16KD 80, MULT18X18D 130 |
 
 ## Next steps
 
 1. CIFAR-10: run `python3 model/train_lenet.py --net cifar10` and `python3 model/quantize.py --net cifar10` on a
    machine that can download the Toronto archive, commit `model/data/cifar10/`, add `cifar10` to `NETS` in the
    Makefile. No RTL change is expected: conv1 has C_in 3 and pad 0, everything else is identical.
-2. M6 options: AXI4 master DMA, `chip_top` with CDC and a configuration bridge, FPGA synthesis numbers.
+2. Synthesis: reduce the combinational area until the default configuration fits the ECP5-85k, then record the
+   xc7 and ECP5 numbers and the post-route Fmax in `docs/synthesis.md` and the README.
 3. Run the unit and integration testbenches with VCS and record the results in the table below.
 
 ## Known limitations

@@ -25,7 +25,7 @@ All registers are 32 bits. Types: RO read-only, RW read-write, W1P write-1-to-pu
 | Offset | Name | Bits | Type | Reset | Description |
 | --- | --- | --- | --- | --- | --- |
 | `0x000` | ID | [31:0] | RO | `0x4E505501` | ASCII "NPU" + version 0x01 |
-| `0x004` | CTRL | [0] START | W1P | 0 | Start one inference; ignored while busy |
+| `0x004` | CTRL | [0] START | W1P | 0 | Start one inference; ignored while busy. An accepted START clears DONE, ERR, ERR_CODE, RESULT.VALID and the perf counters |
 | | | [1] IRQ_EN | RW | 0 | Enable `irq_o` |
 | `0x008` | STATUS | [0] BUSY | RO | 0 | Running |
 | | | [1] DONE | W1C | 0 | One inference finished |
@@ -42,7 +42,9 @@ All registers are 32 bits. Types: RO read-only, RW read-write, W1P write-1-to-pu
 | `0x080 - 0x0BC` | PERF_LAYER[0..15] | [31:0] | RO | 0 | Cycles per descriptor |
 | `0x100 - 0x4FF` | DESC[0..15] | 16 words | RW | 0 | Descriptor table, 64 bytes per entry, see section 3 |
 
-The perf registers clear on START. Undefined offsets read as 0 and ignore writes (no error, for forward compatibility).
+The perf registers clear on START. Undefined offsets inside the 4 KB register window read as 0 and ignore writes
+(no error, for forward compatibility); writes to read-only registers are ignored. Reserved bits of descriptor words
+read as 0. Misaligned addresses (bits [1:0] not zero) return SLVERR in every window.
 
 ## 3. Descriptor format
 
@@ -100,12 +102,15 @@ Output sizes are computed by hardware: `OUT = IN + 2*PAD - K + 1` (CONV2D), `OUT
 | --- | --- |
 | `0x00` | No error |
 | `0x01` | Illegal OP |
-| `0x02` | Unsupported parameter: K = 0 or > 7, STRIDE_M1 != 0, C_IN or C_OUT = 0, K_total > 4096, ARGMAX C_IN > 16 |
+| `0x02` | Unsupported parameter: K = 0 or > 7, PAD > 7, STRIDE_M1 != 0 (CONV2D), C_IN or C_OUT = 0, K_total > 4096, RQ_SHIFT = 0 or 63, RQ_MULT outside `[2^30, 2^31)`, ACT_MIN > ACT_MAX, ARGMAX C_IN = 0 or > 16 |
 | `0x03` | Address out of range or misaligned: input, output, weight or bias region exceeds its buffer, W_BASE not 8-byte aligned, B_BASE not 4-byte aligned |
 | `0x04` | LAYER_CNT = 0 or > 16 |
 | `0x05` | Output size <= 0 (K > IN + 2*PAD) |
 
 On error the sequencer stops immediately, BUSY clears, ERR is set and CUR_LAYER points at the failing descriptor.
+The checks run in the order `0x01`, `0x02`, `0x05`, `0x03`; the first failing check sets the code. `0x04` is
+checked at START before any descriptor. All checks happen before a layer's engine starts, so a layer that fails has
+not touched memory. ERR_CODE keeps its value after ERR is cleared and resets on the next accepted START.
 
 ## 6. Example: LeNet-5 on MNIST
 

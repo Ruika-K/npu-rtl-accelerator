@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M2 complete: `systolic_array` verified against the Python GEMM model. Next: M3, the AXI4-Lite host interface, register file and sequencer.
+M3 complete: AXI4-Lite slave, register file with descriptor table, and layer sequencer, all unit-tested. Next: M4, the memories and the engines.
 
 ## Completed
 
@@ -28,13 +28,26 @@ M2 complete: `systolic_array` verified against the Python GEMM model. Next: M3, 
   - Testbench: `tb/unit/systolic_array_tb.sv` drives GEMMs tile by tile exactly as `conv_engine` will and checks
     data, column order, drain continuity and the exact drain start cycle.
 
+- M3 (2026-11-03):
+  - RTL: `rtl/host/axil_slave.sv` (AXI4-Lite to the internal req/ack bus, write wins same-cycle arbitration),
+    `rtl/host/npu_regs.sv` (registers, 16 x 10-word descriptor table with byte strobes and reserved masks,
+    host routing to the memory windows with busy rejection, argmax result, irq), `rtl/ctrl/npu_sequencer.sv`
+    (layer loop, all static descriptor checks in a fixed order, FC as 1x1 CONV2D, three perf counters).
+    `npu_pkg` gained the descriptor word mapping and parameter limits. All lint clean under `-Wall`.
+  - Model: `desc_pack` / `desc_unpack` / `desc_check` in `model/npu_ref.py`, mirroring the sequencer's checks;
+    `model/gen_desc_vectors.py`.
+  - Testbenches: `tb/common/axil_master_bfm.sv` (reusable AXI4-Lite master), `tb/unit/axil_slave_tb.sv`,
+    `tb/unit/npu_regs_tb.sv`, `tb/unit/npu_sequencer_tb.sv`.
+  - Spec refinements recorded in `programming_model.md`: START clears DONE / ERR / ERR_CODE / RESULT.VALID;
+    error 0x02 also covers PAD > 7, RQ_SHIFT, RQ_MULT range and ACT_MIN > ACT_MAX; check order documented.
+
 ## Milestone plan
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches | Done |
 | M2 | `systolic_array` GEMM checked against the Python integer model | Done |
-| M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Not started |
+| M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | `act_buffer`, `weight_buffer`, `conv_addr_gen`, `conv_engine`, `pool_engine`, `argmax_engine`; single layers bit-exact | Not started |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | Not started |
 | M6 | Optional: AXI4 master DMA, `chip_top` (CDC / configuration bridge / clock gating), FPGA synthesis data | Not started |
@@ -56,13 +69,20 @@ M2 complete: `systolic_array` verified against the Python GEMM model. Next: M3, 
 | 2026-11-03 | Verilator 5.020 | Negative test: one Python GEMM expected value corrupted | Testbench reports FAIL (SV-vs-Python cross-check) |
 | 2026-11-03 | Verilator 5.020 | Negative test: testbench copy with one expected matrix element off by one | Monitor reports the mismatching element in every case (RTL-vs-expected check) |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after M2 | All pass |
+| 2026-11-03 | Verilator 5.020 | `make unit-axil_slave` (seed 1) | PASS, 2023 checks: 980 writes, 1041 reads, every AW/W ordering, random back-pressure, same-cycle arbitration |
+| 2026-11-03 | Verilator 5.020 | `make unit-npu_regs` (seed 1) | PASS, 1153 checks: reset values, W1P / W1C / RO, descriptor words, memory windows, SLVERR cases, HOST_CONFLICT, 500 random accesses |
+| 2026-11-03 | Verilator 5.020 | `make unit-npu_sequencer` (seed 1) | PASS, 2928 checks: LeNet program, NOP, start while busy, every error code, engine error, cycle-exact counters, 2000 Python descriptors with matching codes |
+| 2026-11-03 | Verilator 5.020 | The three M3 testbenches with `SEED=7` | PASS |
+| 2026-11-03 | Verilator 5.020 | Negative tests: one Python descriptor code flipped; register TB copy with a wrong expected ID | Both report FAIL |
+| 2026-11-03 | Verilator 5.020 | `make clean && make ci` after M3 | All pass, 47 s |
 
 ## Next steps
 
-1. M3: `rtl/host/axil_slave.sv` (AXI4-Lite to the internal req/ack bus), `rtl/host/npu_regs.sv` (registers,
-   descriptor table, perf counters, host routing to on-chip memory), `rtl/ctrl/npu_sequencer.sv` (layer loop,
-   error checks); unit testbenches with an AXI4-Lite driver task library in `tb/common/`, every error code covered.
-2. Run `make vcs-unit-<module>` for requant_unit, pe and systolic_array with VCS and record the results in the table below.
+1. M4: `rtl/mem/sram_1r1w.sv`, `act_buffer.sv` (8 byte banks, unaligned 8-byte access), `weight_buffer.sv`, the
+   32-bit host port adapter, `conv_addr_gen.sv`, `conv_engine.sv` (bias prefetch, tile loop, drain, requant x8,
+   writer), `pool_engine.sv`, `argmax_engine.sv`, and `npu_top.sv` wiring everything; Python conv2d / maxpool /
+   argmax reference; single-layer integration testbenches loading through AXI4-Lite and comparing bit-exact.
+2. Run `make vcs-unit-<module>` for the six units with VCS and record the results in the table below.
 
 ## Known limitations
 

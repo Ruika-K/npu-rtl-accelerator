@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hand-computed checks for model/npu_ref.py. Run: python3 model/test_npu_ref.py"""
-from npu_ref import INT32_MAX, INT32_MIN, matmul_int, pe_tile, quantize_multiplier, requant
+from npu_ref import (ERR_BAD_ADDR, ERR_BAD_OUT_DIM, ERR_BAD_PARAM, ERR_NONE, INT32_MAX, INT32_MIN, OP_CONV2D, OP_FC,
+                     desc_check, desc_pack, desc_unpack, matmul_int, pe_tile, quantize_multiplier, requant)
 
 HALF = 1 << 30   # with shift 31 this is an exact x0.5 multiplier
 
@@ -47,6 +48,21 @@ def main():
     assert matmul_int([[1, 2], [3, 4]], [[5, 6], [7, 8]]) == [[19, 22], [43, 50]]
     assert matmul_int([[-128] * 512], [[-128]] * 512) == [[512 * 16384]]
     assert matmul_int([[127, -128]], [[-128, 127], [127, -128]]) == [[-32512, 32513]]
+
+    conv1 = {"op": OP_CONV2D, "k": 5, "pad": 2, "stride_m1": 0, "in_h": 28, "in_w": 28, "c_in": 1, "c_out": 6,
+             "in_base": 0x0000, "out_base": 0x0400, "w_base": 0x00000, "b_base": 0x00100,
+             "rq_mult": 1 << 30, "rq_shift": 31, "z_in": -128, "z_out": -128, "act_min": -128, "act_max": 127}
+    assert desc_unpack(desc_pack(conv1)) == conv1
+    assert desc_check(conv1) == ERR_NONE
+    assert desc_check({**conv1, "k": 8}) == ERR_BAD_PARAM
+    assert desc_check({**conv1, "in_h": 1, "pad": 0}) == ERR_BAD_OUT_DIM
+    assert desc_check({**conv1, "w_base": 4}) == ERR_BAD_ADDR
+    assert desc_check({**conv1, "out_base": 0x8000 - 4703}) == ERR_BAD_ADDR
+    assert desc_check({**conv1, "out_base": 0x8000 - 4704}) == ERR_NONE
+    fc = {**conv1, "op": OP_FC, "in_h": 1, "in_w": 1, "c_in": 400, "c_out": 120, "k": 1, "pad": 0,
+          "w_base": 0x01000, "b_base": 0x0CC00}
+    assert desc_check(fc) == ERR_NONE
+    assert desc_check({**fc, "k": 9, "pad": 15, "in_h": 7}) == ERR_NONE   # FC ignores k, pad, in_h
 
     print("PASS: test_npu_ref")
 

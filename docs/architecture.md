@@ -284,22 +284,42 @@ Naming: inputs end in `_i`, outputs in `_o`, the active-low reset is `rst_ni`. M
 | `rd_req_o`, `rd_addr_o[19:0]` | Single-cycle read request |
 | `rd_ack_i`, `rd_data_i[31:0]`, `rd_err_i` | Read response |
 
-The AXI4-Lite side handles one transaction at a time with no outstanding requests; write-before-read ordering is
-guaranteed by AXI itself.
+The AXI4-Lite side handles one transaction at a time with no outstanding requests. A write is accepted only when
+AW and W are both valid; when a write and a read are requested in the same cycle the write is taken first. The
+responder answers a request at least one cycle later; the err flags map to SLVERR. `awprot` / `arprot` are
+ignored and only the low 20 address bits are decoded.
+
+`npu_regs` forwards accesses to the two memory windows on a host memory port while the NPU is idle:
+
+| Signal | Description |
+| --- | --- |
+| `hm_req_o`, `hm_we_o`, `hm_sel_o` | Single-cycle request; `hm_sel_o` = 0 act_buffer, 1 weight_buffer |
+| `hm_addr_o[19:0]`, `hm_wdata_o[31:0]`, `hm_be_o[3:0]` | Byte offset inside the selected buffer (4-byte aligned), write data, byte enables |
+| `hm_ack_i`, `hm_rdata_i[31:0]` | Completion, at least one cycle after the request |
+
+The adapter from this 32-bit port to the 64-bit buffer ports is part of M4.
 
 ### 7.3 npu_regs to npu_sequencer
 
 | Signal | Description |
 | --- | --- |
-| `start_i` (pulse), `layer_cnt_i[4:0]` | Produced by CTRL.START |
-| `desc_i[NUM_DESC]` (array of `desc_t`) | Read-only view of the descriptor table |
-| `busy_o`, `done_o` (pulse), `err_o`, `err_code_o[7:0]`, `cur_layer_o[3:0]` | Status |
-| `layer_cycles_o[NUM_DESC][31:0]`, `total_cycles_o[31:0]`, `array_busy_cycles_o[31:0]` | Perf |
+| `start_i` (pulse), `layer_cnt_i[4:0]` | Produced by CTRL.START; `npu_regs` already suppresses START while busy |
+| `desc_i[NUM_DESC]` (array of `desc_t`) | Read-only view of the descriptor table, decoded from the stored words |
+| `busy_o`, `done_o` (pulse), `err_o` (pulse), `err_code_o`, `cur_layer_o[3:0]` | Status; busy is already low in the cycle done or err pulses |
+| `layer_cycles_o[NUM_DESC][31:0]`, `total_cycles_o[31:0]`, `array_busy_cycles_o[31:0]` | Perf counters, cleared on an accepted start; `array_busy_cycles_o` counts busy cycles with `array_valid_i` high |
+| `array_valid_i` | The systolic array's `in_valid`, from conv_engine |
+
+`npu_regs` also receives the argmax result (`argmax_valid_i`, `argmax_idx_i[3:0]`, `argmax_logits_i[16][7:0]`)
+and drives `irq_o = DONE & IRQ_EN`.
 
 ### 7.4 npu_sequencer to the engines
 
-One set per engine: `start_i` (pulse), `desc_i` (the current layer's `desc_t`), `busy_o`, `done_o` (pulse).
-If the engine finds an illegal parameter, it raises `err_o` with `err_code_o` one cycle after `start`.
+One `eng_desc_o` (the current layer's `desc_t`, held for the whole layer) shared by the engines, and per engine a
+`start` pulse plus `done` (pulse), `err` (pulse) and `err_code` back. CONV2D and FC both start `conv_engine`; FC is
+forwarded as a 1x1 CONV2D with `in_h = in_w = 1`, `pad = 0`, stride 0. All static descriptor checks (opcode,
+parameter ranges, output size, address ranges and alignment) are done once in the sequencer before the start pulse,
+in the order ERR_BAD_OP, ERR_BAD_PARAM, ERR_BAD_OUT_DIM, ERR_BAD_ADDR; an engine only reports errors it detects
+while running. NOP layers complete without an engine.
 
 ### 7.5 Engine to act_buffer
 

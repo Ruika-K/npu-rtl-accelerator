@@ -263,8 +263,12 @@ for n_tile in 0 .. ceil(C_out / 8) - 1:
 Peak is 64 MAC/cycle, the ideal is 6.5K cycles, so the expected utilization is about 37%. All three losses are
 structural and worth understanding: C_out = 6 uses only 6 of 8 columns; with W_out = 28 the last m_tile uses only
 4 lanes; FC has a single output pixel, uses 1 of 8 rows, and is bound by weight bandwidth (8 bytes of weights per
-cycle support at most 8 MACs). The perf counters record per-layer cycles and array-active cycles so that the
-README can report measured numbers.
+cycle support at most 8 MACs). The perf counters record per-layer cycles and array-active cycles.
+
+Measured (M5, `make integ-mnist`, first image): conv1 2835, pool1 1350, conv2 6041, pool2 646, fc1 6119,
+fc2 1415, fc3 209, argmax 20, total 18635 cycles with the array busy for 16288; the differences to the estimate are
+the bias prefetch per n_tile, the pipeline fill and flush per layer, and the sequential pool engine. Utilization
+is 35% of peak. See the README for the table.
 
 ## 6. pool_engine and argmax_engine
 

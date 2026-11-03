@@ -259,7 +259,7 @@ def main():
     ap.add_argument("--src", default=None, help="directory with fp32.npz, calib.npz, test.npz (default model/out/<net>)")
     ap.add_argument("--out", default=None, help="output directory (default model/data/<net>)")
     ap.add_argument("--images", type=int, default=100, help="test images written to program.txt")
-    ap.add_argument("--report", type=int, default=1000, help="test images used for the accuracy numbers")
+    ap.add_argument("--report", type=int, default=1000, help="test images used for the accuracy numbers (pure Python, about 0.15 s per image)")
     args = ap.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))

@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M4 complete: memories, the three engines and `npu_top` are integrated; single layers are bit-exact through AXI4-Lite. Next: M5, LeNet-5 end to end on MNIST and CIFAR-10.
+M5: LeNet-5 runs end to end on MNIST, bit-exact with the integer model on all 100 committed test images. CIFAR-10 waits for its dataset (the Toronto archive is not reachable from the CI container; the same two scripts produce it on a machine that can download it). Next: M6 options.
 
 ## Completed
 
@@ -53,6 +53,18 @@ M4 complete: memories, the three engines and `npu_top` are integrated; single la
     (real memories, guard bands); `tb/integration/npu_top_tb.sv` replaces the reset smoke test and drives
     everything through AXI4-Lite (`make integ`).
 
+- M5 (2026-11-03):
+  - `model/train_lenet.py`: float32 LeNet-5 trained with numpy only (im2col, Adam); MNIST 4 epochs reach 98.7% on
+    the 10k test set in about 3 minutes on 4 cores.
+  - `model/quantize.py`: calibration on 500 training images, per-tensor symmetric weights, asymmetric activations,
+    folded zero points, mult / shift, memory layout and descriptors; exports `model/data/mnist/program.txt`
+    (descriptors, 16208 weight words, 100 images with the integer model's prediction, full traces of two images),
+    `net.json`, float16 checkpoint. Integer program accuracy 97.9% on 2000 images, equal to float32.
+  - `model/npu_ref.py`: `run_program`, the memory-level executor used for every expected value.
+  - `tb/integration/npu_lenet_tb.sv` (`make integ-mnist`): weights and descriptors once, then per image load,
+    run, compare the class with the model; layer traces byte for byte; perf counters printed.
+  - README performance table from the counters: 18635 cycles per image, 35% of peak.
+
 ## Milestone plan
 
 | Milestone | Scope | Status |
@@ -61,7 +73,7 @@ M4 complete: memories, the three engines and `npu_top` are integrated; single la
 | M2 | `systolic_array` GEMM checked against the Python integer model | Done |
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
-| M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | Not started |
+| M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | MNIST done; CIFAR-10 pending dataset |
 | M6 | Optional: AXI4 master DMA, `chip_top` (CDC / configuration bridge / clock gating), FPGA synthesis data | Not started |
 
 ## Verification evidence
@@ -94,14 +106,17 @@ M4 complete: memories, the three engines and `npu_top` are integrated; single la
 | 2026-11-03 | Verilator 5.020 | The M4 testbenches with `SEED=7` | PASS |
 | 2026-11-03 | Verilator 5.020 | Negative test: one expected output byte corrupted in the layer vectors | `make integ` reports FAIL |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after M4 | All 12 testbenches pass, 78 s |
+| 2026-11-03 | numpy 2.5 | `python3 model/train_lenet.py --net mnist` | float32 test accuracy 98.68% after 4 epochs |
+| 2026-11-03 | Python 3.13 | `python3 model/quantize.py --net mnist --report 2000` | int8 program 97.9% on 2000 images, float32 97.9% on the same images |
+| 2026-11-03 | Verilator 5.020 | `make integ-mnist` (100 images) | PASS: 100 of 100 predictions equal the integer model, 99 match the label, 14 layer traces byte-exact, 18635 cycles per image |
 
 ## Next steps
 
-1. M5: `model/train_lenet.py` (PyTorch, MNIST and CIFAR-10), `model/quantize.py` (post-training quantization,
-   zero-point folding, weight blob and descriptor export), committed `model/data/<net>/` images and vectors,
-   `npu_ref.py` network runner, top-level LeNet-5 test (layer-by-layer bit-exact, then 100 images with the same
-   accuracy as the model), README performance table from the perf counters.
-2. Run the unit and integration testbenches with VCS and record the results in the table below.
+1. CIFAR-10: run `python3 model/train_lenet.py --net cifar10` and `python3 model/quantize.py --net cifar10` on a
+   machine that can download the Toronto archive, commit `model/data/cifar10/`, add `cifar10` to `NETS` in the
+   Makefile. No RTL change is expected: conv1 has C_in 3 and pad 0, everything else is identical.
+2. M6 options: AXI4 master DMA, `chip_top` with CDC and a configuration bridge, FPGA synthesis numbers.
+3. Run the unit and integration testbenches with VCS and record the results in the table below.
 
 ## Known limitations
 

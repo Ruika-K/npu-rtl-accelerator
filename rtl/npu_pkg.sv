@@ -52,7 +52,22 @@ package npu_pkg;
   localparam logic [11:0] REG_PERF_ARRAY_BUSY = 12'h064;
   localparam logic [11:0] REG_PERF_LAYER_BASE = 12'h080;  // NUM_DESC words
   localparam logic [11:0] REG_DESC_BASE       = 12'h100;  // NUM_DESC x 16 words
-  localparam int unsigned DESC_WORDS          = 16;
+  localparam int unsigned DESC_WORDS          = 16;       // address stride per descriptor
+  localparam int unsigned DESC_USED_WORDS     = 10;       // W0 .. W9 are stored, W10 .. W15 read as 0
+  localparam int unsigned NUM_LOGITS          = 16;
+
+  localparam logic [19:0] ABUF_END = ABUF_BASE + 20'(ABUF_BYTES);   // exclusive
+  localparam logic [19:0] WBUF_END = WBUF_BASE + 20'(WBUF_BYTES);   // exclusive
+
+  // Descriptor parameter limits (programming_model.md section 5)
+  localparam int unsigned MAX_KERNEL   = 7;
+  localparam int unsigned MAX_PAD      = 7;
+  localparam int unsigned MAX_K_TOTAL  = 4096;
+  localparam int unsigned MAX_ARGMAX_C = 16;
+
+  // Bits that exist in each stored descriptor word; the rest read as 0.
+  localparam logic [31:0] DESC_W0_MASK = 32'h0000_3FFF;
+  localparam logic [31:0] DESC_W8_MASK = 32'h0000_003F;
 
   // ---------------------------------------------------------------------------
   // Encodings
@@ -106,6 +121,40 @@ package npu_pkg;
     logic [3:0]                   k;
     op_e                          op;
   } desc_t;
+
+  typedef logic [DESC_USED_WORDS-1:0][31:0] desc_words_t;
+
+  // Word view of a descriptor as the host sees it (programming_model.md section 3).
+  function automatic desc_t desc_from_words(input desc_words_t w);
+    desc_t d;
+    d.op        = op_e'(w[0][3:0]);
+    d.k         = w[0][7:4];
+    d.pad       = w[0][11:8];
+    d.stride_m1 = w[0][13:12];
+    d.in_h      = w[1][15:0];
+    d.in_w      = w[1][31:16];
+    d.c_in      = w[2][15:0];
+    d.c_out     = w[2][31:16];
+    d.in_base   = w[3];
+    d.out_base  = w[4];
+    d.w_base    = w[5];
+    d.b_base    = w[6];
+    d.rq_mult   = w[7];
+    d.rq_shift  = w[8][5:0];
+    d.z_in      = w[9][7:0];
+    d.z_out     = w[9][15:8];
+    d.act_min   = w[9][23:16];
+    d.act_max   = w[9][31:24];
+    return d;
+  endfunction
+
+  function automatic logic [31:0] desc_word_mask(input int unsigned idx);
+    case (idx)
+      0:       return DESC_W0_MASK;
+      8:       return DESC_W8_MASK;
+      default: return 32'hFFFF_FFFF;
+    endcase
+  endfunction
 
 endpackage
 /* verilator lint_on UNUSEDPARAM */

@@ -36,8 +36,9 @@ Rules:
 | `systolic_array` | GEMMs driven tile by tile as `conv_engine` will: M up to 64, K from 1 to 512, N up to 32, partial tiles with random garbage in unused lanes, random idle cycles anywhere, N-K idle cycles after tiles with K < N; data modes include all -128 and random extremes | Every drained element equals the SV integer matrix product (itself cross-checked against Python GEMM vectors); column order 0..N-1; `drain_valid_o` never drops mid-drain; the drain starts exactly N-1 edges after the last beat |
 | `act_buffer` | Random unaligned 8-byte reads and writes, byte enables, same-cycle read and write to different addresses | Compared with a byte-array model in SV |
 | `conv_addr_gen` | Random H / W / C_in / C_out / K / pad | Address stream, lane masks and first / last match a Python-generated sequence cycle by cycle |
-| `axil_slave` + `npu_regs` | AXI4-Lite reads and writes, W1P / W1C semantics, memory access while busy | Response codes, register values, HOST_CONFLICT |
-| `npu_sequencer` | Stub engines (immediate or delayed done), illegal descriptors | Layer order, perf counts, error code and CUR_LAYER |
+| `axil_slave` | `tb/common/axil_master_bfm.sv` drives every AW/W ordering, random response back-pressure and a same-cycle read/write; a responder model answers after random delays and flags errors by address | Data and strobes reach the responder, read data and response codes, AXI4-Lite rules (valid held until ready, readies only with valids, no simultaneous read and write accept), one internal-bus transaction at a time, write wins arbitration |
+| `npu_regs` (behind `axil_slave`) | Testbench plays the sequencer, the argmax engine and both memories; directed register sequences plus random mixed traffic against a reference | Reset values, RW / RO / W1P / W1C, START side effects, irq, descriptor words with byte strobes and reserved masks, `desc_o` decoding, memory-window routing, SLVERR for unmapped / misaligned / busy accesses, HOST_CONFLICT |
+| `npu_sequencer` | Stub engines with random latency or injected errors, a LeNet-5 program, NOP layers, start while busy, one directed case per check, descriptors from `model/gen_desc_vectors.py` | Engine order and forwarded descriptors (FC view), done / busy / cur_layer timing, every error code with the failing layer, the three counters against a cycle-exact model, error codes equal to the Python model on 2000 random descriptors |
 | `pool_engine`, `argmax_engine` | Random tensors | Match numpy |
 
 ### 2.2 Integration level (`tb/integration/`)
@@ -87,7 +88,7 @@ Constraints:
 | --- | --- |
 | M1 | `requant_unit` and `pe` unit testbenches pass; the requant function of `npu_ref.py` agrees with the SV reference function on 100k random samples |
 | M2 | `systolic_array` is bit-exact on 200 random GEMMs, including K < 8 and K > 256 |
-| M3 | `axil_slave`, `npu_regs` and `npu_sequencer` unit testbenches pass; every error code is covered |
+| M3 | `axil_slave`, `npu_regs` and `npu_sequencer` unit testbenches pass; every error code is covered; descriptor checks agree with the Python model |
 | M4 | Single-layer CONV2D / FC / MAXPOOL / ARGMAX integration testbenches are bit-exact |
 | M5 | LeNet-5 on MNIST and CIFAR-10 is bit-exact end to end; accuracy equals the golden model; CI green; README has the performance table |
 | M6 | Optional items each define their own: DMA integration testbench, chip_top CDC testbench, FPGA synthesis report |

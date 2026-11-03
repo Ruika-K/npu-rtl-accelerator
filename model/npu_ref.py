@@ -133,3 +133,137 @@ def matmul_int(a, w):
             out_row.append(acc)
         out.append(out_row)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Descriptors (programming_model.md section 3) and the sequencer's checks
+# (programming_model.md section 5, npu_sequencer.sv check_desc)
+# ---------------------------------------------------------------------------
+
+ARR_N = 8
+ABUF_BYTES = 32768
+WBUF_BYTES = 131072
+NUM_DESC = 16
+MAX_KERNEL = 7
+MAX_PAD = 7
+MAX_K_TOTAL = 4096
+MAX_ARGMAX_C = 16
+
+OP_NOP, OP_CONV2D, OP_MAXPOOL2X2, OP_FC, OP_ARGMAX = 0, 1, 2, 3, 4
+ERR_NONE, ERR_BAD_OP, ERR_BAD_PARAM, ERR_BAD_ADDR, ERR_BAD_LAYER_CNT, ERR_BAD_OUT_DIM = 0, 1, 2, 3, 4, 5
+
+DESC_FIELDS = ("op", "k", "pad", "stride_m1", "in_h", "in_w", "c_in", "c_out", "in_base", "out_base",
+               "w_base", "b_base", "rq_mult", "rq_shift", "z_in", "z_out", "act_min", "act_max")
+
+
+def _u(v, bits):
+    return v & ((1 << bits) - 1)
+
+
+def _s8(v):
+    v &= 0xFF
+    return v - 256 if v >= 128 else v
+
+
+def desc_pack(d):
+    """Descriptor dict -> the 10 stored 32-bit words W0..W9 (reserved bits zero)."""
+    w = [0] * 10
+    w[0] = _u(d["op"], 4) | (_u(d["k"], 4) << 4) | (_u(d["pad"], 4) << 8) | (_u(d["stride_m1"], 2) << 12)
+    w[1] = _u(d["in_h"], 16) | (_u(d["in_w"], 16) << 16)
+    w[2] = _u(d["c_in"], 16) | (_u(d["c_out"], 16) << 16)
+    w[3] = _u(d["in_base"], 32)
+    w[4] = _u(d["out_base"], 32)
+    w[5] = _u(d["w_base"], 32)
+    w[6] = _u(d["b_base"], 32)
+    w[7] = _u(d["rq_mult"], 32)
+    w[8] = _u(d["rq_shift"], 6)
+    w[9] = _u(d["z_in"], 8) | (_u(d["z_out"], 8) << 8) | (_u(d["act_min"], 8) << 16) | (_u(d["act_max"], 8) << 24)
+    return w
+
+
+def desc_unpack(w):
+    """10 words -> descriptor dict, the way npu_pkg::desc_from_words decodes them."""
+    return {
+        "op": w[0] & 0xF, "k": (w[0] >> 4) & 0xF, "pad": (w[0] >> 8) & 0xF, "stride_m1": (w[0] >> 12) & 0x3,
+        "in_h": w[1] & 0xFFFF, "in_w": (w[1] >> 16) & 0xFFFF,
+        "c_in": w[2] & 0xFFFF, "c_out": (w[2] >> 16) & 0xFFFF,
+        "in_base": w[3], "out_base": w[4], "w_base": w[5], "b_base": w[6],
+        "rq_mult": w[7], "rq_shift": w[8] & 0x3F,
+        "z_in": _s8(w[9]), "z_out": _s8(w[9] >> 8), "act_min": _s8(w[9] >> 16), "act_max": _s8(w[9] >> 24),
+    }
+
+
+def pad_to_arr(c):
+    return (c + ARR_N - 1) // ARR_N * ARR_N
+
+
+def desc_check(d):
+    """Return the error code the sequencer reports for descriptor dict d.
+
+    Same checks in the same order as npu_sequencer.sv check_desc:
+    ERR_BAD_OP, then ERR_BAD_PARAM, then ERR_BAD_OUT_DIM, then ERR_BAD_ADDR.
+    """
+    op = d["op"]
+    if op == OP_NOP:
+        return ERR_NONE
+    if op not in (OP_CONV2D, OP_FC, OP_MAXPOOL2X2, OP_ARGMAX):
+        return ERR_BAD_OP
+
+    if op == OP_ARGMAX:
+        if d["c_in"] == 0 or d["c_in"] > MAX_ARGMAX_C:
+            return ERR_BAD_PARAM
+        if d["in_base"] + d["c_in"] > ABUF_BYTES:
+            return ERR_BAD_ADDR
+        return ERR_NONE
+
+    if op == OP_MAXPOOL2X2:
+        if d["c_in"] == 0:
+            return ERR_BAD_PARAM
+        if d["in_h"] < 2 or d["in_w"] < 2:
+            return ERR_BAD_OUT_DIM
+        oh, ow = d["in_h"] >> 1, d["in_w"] >> 1
+        if d["in_base"] + d["in_h"] * d["in_w"] * d["c_in"] > ABUF_BYTES:
+            return ERR_BAD_ADDR
+        if d["out_base"] + oh * ow * d["c_in"] > ABUF_BYTES:
+            return ERR_BAD_ADDR
+        return ERR_NONE
+
+    # CONV2D and FC
+    fc = op == OP_FC
+    k = 1 if fc else d["k"]
+    pad = 0 if fc else d["pad"]
+    in_h = 1 if fc else d["in_h"]
+    in_w = 1 if fc else d["in_w"]
+    if k == 0 or k > MAX_KERNEL:
+        return ERR_BAD_PARAM
+    if pad > MAX_PAD:
+        return ERR_BAD_PARAM
+    if op == OP_CONV2D and d["stride_m1"] != 0:
+        return ERR_BAD_PARAM
+    if d["c_in"] == 0 or d["c_out"] == 0:
+        return ERR_BAD_PARAM
+    k_total = d["c_in"] * k * k
+    if k_total > MAX_K_TOTAL:
+        return ERR_BAD_PARAM
+    if d["rq_shift"] == 0 or d["rq_shift"] == 63:
+        return ERR_BAD_PARAM
+    if not (RQ_MULT_MIN <= d["rq_mult"] <= RQ_MULT_MAX):
+        return ERR_BAD_PARAM
+    if d["act_min"] > d["act_max"]:
+        return ERR_BAD_PARAM
+    if in_h + 2 * pad < k or in_w + 2 * pad < k:
+        return ERR_BAD_OUT_DIM
+    oh = in_h + 2 * pad - k + 1
+    ow = in_w + 2 * pad - k + 1
+    n_pad = pad_to_arr(d["c_out"])
+    if d["w_base"] % 8 != 0 or d["b_base"] % 4 != 0:
+        return ERR_BAD_ADDR
+    if d["in_base"] + in_h * in_w * d["c_in"] > ABUF_BYTES:
+        return ERR_BAD_ADDR
+    if d["out_base"] + oh * ow * d["c_out"] > ABUF_BYTES:
+        return ERR_BAD_ADDR
+    if d["w_base"] + k_total * n_pad > WBUF_BYTES:
+        return ERR_BAD_ADDR
+    if d["b_base"] + n_pad * 4 > WBUF_BYTES:
+        return ERR_BAD_ADDR
+    return ERR_NONE

@@ -1,8 +1,12 @@
 rtl/npu_pkg.sv
+rtl/mem/sram_1r1w.sv
+rtl/mem/act_buffer.sv
+rtl/mem/weight_buffer.sv
 rtl/compute/requant_unit.sv
 rtl/compute/pe.sv
 rtl/compute/systolic_array.sv
 rtl/host/axil_slave.sv
 rtl/host/npu_regs.sv
+rtl/host/host_mem_adapter.sv
 rtl/ctrl/npu_sequencer.sv
 rtl/npu_top.sv

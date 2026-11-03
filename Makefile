@@ -158,13 +158,14 @@ $(SYNTH_DIR)/npu_top.v: $(RTL_SRCS)
 
 synth-xilinx: $(SYNTH_DIR)/npu_top.v
 	$(YOSYS) -q -l $(SYNTH_DIR)/xilinx.log -s synth/xilinx.ys
-	@grep -A40 "=== npu_top ===" $(SYNTH_DIR)/xilinx_stat.txt | head -60
+	@python3 synth/stat_table.py $(SYNTH_DIR)/xilinx_stat.txt
 
 synth-ecp5: $(SYNTH_DIR)/npu_top.v
 	$(YOSYS) -q -l $(SYNTH_DIR)/ecp5.log -s synth/ecp5.ys
 	$(NEXTPNR_ECP5) --85k --package CABGA381 --speed 8 --json $(SYNTH_DIR)/npu_top_ecp5.json \
-	    --freq 100 --timing-allow-fail --seed 1 --log $(SYNTH_DIR)/nextpnr.log > /dev/null
-	@grep -E "Max frequency|Device utilisation|TRELLIS_SLICE|DP16KD|MULT18X18D" $(SYNTH_DIR)/nextpnr.log | tail -12
+	    --freq 100 --timing-allow-fail --seed 1 --log $(SYNTH_DIR)/nextpnr.log > /dev/null 2>&1 \
+	    || { grep -E "ERROR|TRELLIS_COMB|TRELLIS_FF|DP16KD|MULT18X18D" $(SYNTH_DIR)/nextpnr.log; exit 1; }
+	@grep -E "Max frequency|TRELLIS_COMB|TRELLIS_FF|DP16KD|MULT18X18D" $(SYNTH_DIR)/nextpnr.log | tail -8
 
 synth: synth-xilinx synth-ecp5
 

@@ -99,6 +99,8 @@ This is the most important architectural decision in v1.
 - Rejected: descriptors in memory with only a pointer register is the more scalable scheme, suited to networks with
   dozens of layers. If deeper networks follow the M6 DMA, switch to "pointer plus prefetch".
 - Cost: the layer count limit is fixed by a parameter.
+- Update (M6): the sequencer no longer selects a whole descriptor out of the table; it fetches the current
+  descriptor word by word through a read port of the register file (ADR-016). The storage is unchanged.
 
 ## ADR-009 Single clock domain in v1; all SoC glue goes into chip_top
 
@@ -174,3 +176,24 @@ This is the most important architectural decision in v1.
   engines); a wider or multi-ID bus.
 - Cost: capture, load and compute are serialized; large models would want the DMA overlapped with compute.
 
+## ADR-016 Synthesis-driven changes in M6
+
+- Context: the first per-module report of the open-source flow (sv2v + Yosys, xc7) put the core at 51.2K LUTs,
+  with `npu_sequencer` at 19.9K and `npu_regs` at 14.9K, and the ECP5-85k at 173% of its LUT4s.
+- Choice:
+  1. A variable-index select from a packed array whose element width is not a power of two is written as a
+     decoded (one-hot) mux or through a view with a power-of-two stride; writes into such arrays use decoded
+     enables.
+  2. The per-beat and per-tile address products in `conv_engine` are running registers.
+  3. The sequencer fetches the current descriptor word by word through the register file's 32-bit read port,
+     shared with host reads (host first), instead of selecting the whole decoded descriptor combinationally.
+  4. `requant_unit` rounds by shifting first and saturates to 14 bits before the zero point and the clamp, which
+     is exact (proof in the module header, boundary vectors in the testbench).
+- Why: sv2v flattens such arrays and Yosys builds a barrel shifter for the variable offset; a commercial tool
+  would infer a mux from the original code, but the RTL should not depend on one tool's inference. The 16:1
+  select of a ~300-bit struct was the largest mux in the design (about 25K ECP5 cells when synthesized alone); fetching costs
+  11 cycles per layer and registers the input of the descriptor checks, which then run as a three-stage pipeline
+  (3 more cycles) because they held the longest path of the first routed design; together 0.6% of an MNIST image.
+- Rejected: moving the table into a RAM (needs a clear-after-reset sequence and multi-cycle host reads; with the
+  read port in place that is now a local change); tool-specific attributes; dropping the ECP5 target.
+- Cost: slightly more verbose RTL, 14 cycles per layer, and descriptors must not be written while busy.

@@ -18,8 +18,8 @@
 // busy cycles in which array_valid_i was high. All three clear on start.
 //
 // Check order, first hit wins: ERR_BAD_OP, ERR_BAD_PARAM, ERR_BAD_OUT_DIM,
-// ERR_BAD_ADDR. The checks are combinational on the fetched (registered)
-// descriptor.
+// ERR_BAD_ADDR. The checks are a three-stage pipeline on the fetched
+// (registered) descriptor.
 module npu_sequencer
   import npu_pkg::*;
 (
@@ -68,23 +68,47 @@ module npu_sequencer
     return (17'(c) + 17'(ARR_N - 1)) & ~17'(ARR_N - 1);
   endfunction
 
-  // One datapath for every op: the operands that differ between ops are
-  // selected first, so each product is built once (ARGMAX and FC are 1x1
-  // images, MAXPOOL halves the size and keeps C_in). The error is then picked
-  // in the documented order: BAD_OP, BAD_PARAM, BAD_OUT_DIM, BAD_ADDR.
+  // Descriptor checks: one datapath for every op, pipelined over three
+  // registered stages so that no path holds more than one multiplier or one
+  // wide add (the checks run once per layer, CHECK_LAT cycles).
+  //   A  operands that differ between ops (ARGMAX and FC are 1x1 images,
+  //      MAXPOOL halves the size and keeps C_in), the size products, and the
+  //      parameter, size and alignment flags
+  //   B  byte counts (size x channels, K_total x padded C_out)
+  //   C  end addresses against the buffer sizes, and the error code in the
+  //      documented order: BAD_OP, BAD_PARAM, BAD_OUT_DIM, BAD_ADDR
   // All widths are exact, so no sum or product can wrap.
-  function automatic err_e check_desc(input desc_t d);
-    logic        is_conv, is_fc, is_pool, is_argmax, is_mac;
-    logic [3:0]  k, pad;
-    logic [15:0] in_h, in_w, c_out_eff;
-    logic [16:0] oh, ow, n_pad;
-    logic [21:0] k_total;                 // c_in (16) * k*k (6)
+  localparam int unsigned CHECK_LAT = 3;
+
+  typedef struct packed {
+    logic        nop, bad_op, is_mac, is_pool;
+    logic        param_err;            // all parameter checks but the K_total limit
+    logic        dim_err, align_err;
+    logic [15:0] c_in, c_out_eff;
+    logic [16:0] n_pad;
+    logic [21:0] k_total;
     logic [31:0] in_hw;
     logic [33:0] out_hw;
-    logic [48:0] in_end;
-    logic [50:0] out_end;
-    logic [48:0] w_end, b_end;
-    logic        param_err, dim_err, addr_err;
+    logic [31:0] in_base, out_base, w_base, b_base;
+  } chk_a_t;
+
+  typedef struct packed {
+    logic        nop, bad_op, is_mac, is_pool;
+    logic        param_err, dim_err, align_err;
+    logic [47:0] in_bytes;
+    logic [49:0] out_bytes;
+    logic [38:0] w_bytes;
+    logic [18:0] b_bytes;
+    logic [31:0] in_base, out_base, w_base, b_base;
+  } chk_b_t;
+
+  function automatic chk_a_t check_stage_a(input desc_t d);
+    chk_a_t      a;
+    logic        is_conv, is_fc, is_argmax;
+    logic [3:0]  k, pad;
+    logic [5:0]  kk;
+    logic [15:0] in_h, in_w;
+    logic [16:0] oh, ow;
     // Zero points are int8 by construction and have no further constraint.
     /* verilator lint_off UNUSEDSIGNAL */
     logic [15:0] unused_zp;
@@ -93,62 +117,81 @@ module npu_sequencer
 
     is_conv   = (d.op == OP_CONV2D);
     is_fc     = (d.op == OP_FC);
-    is_pool   = (d.op == OP_MAXPOOL2X2);
     is_argmax = (d.op == OP_ARGMAX);
-    is_mac    = is_conv || is_fc;
+    a.nop     = (d.op == OP_NOP);
+    a.is_mac  = is_conv || is_fc;
+    a.is_pool = (d.op == OP_MAXPOOL2X2);
+    a.bad_op  = !a.nop && !a.is_mac && !a.is_pool && !is_argmax;
 
-    // operands
-    k         = is_conv ? d.k   : 4'd1;
-    pad       = is_conv ? d.pad : 4'd0;
-    in_h      = (is_fc || is_argmax) ? 16'd1 : d.in_h;
-    in_w      = (is_fc || is_argmax) ? 16'd1 : d.in_w;
-    c_out_eff = is_pool ? d.c_in : d.c_out;
-    if (is_pool) begin
+    k           = is_conv ? d.k   : 4'd1;
+    pad         = is_conv ? d.pad : 4'd0;
+    kk          = 6'(k) * 6'(k);
+    in_h        = (is_fc || is_argmax) ? 16'd1 : d.in_h;
+    in_w        = (is_fc || is_argmax) ? 16'd1 : d.in_w;
+    a.c_in      = d.c_in;
+    a.c_out_eff = a.is_pool ? d.c_in : d.c_out;
+    if (a.is_pool) begin
       oh = {2'b00, in_h[15:1]};
       ow = {2'b00, in_w[15:1]};
     end else begin
       oh = 17'(in_h) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;   // only used when dim_err is clear
       ow = 17'(in_w) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;
     end
-    n_pad   = pad_to_arr(d.c_out);
-    k_total = 22'(d.c_in) * 22'(k) * 22'(k);
+    a.n_pad   = pad_to_arr(d.c_out);
+    a.k_total = 22'(d.c_in) * 22'(kk);
+    a.in_hw   = 32'(in_h) * 32'(in_w);
+    a.out_hw  = 34'(oh) * 34'(ow);
+    a.in_base = d.in_base; a.out_base = d.out_base; a.w_base = d.w_base; a.b_base = d.b_base;
 
-    // sizes and end addresses (one product each)
-    in_hw   = 32'(in_h) * 32'(in_w);
-    out_hw  = 34'(oh) * 34'(ow);
-    in_end  = 49'(d.in_base) + 49'(in_hw) * 49'(d.c_in);
-    out_end = 51'(d.out_base) + 51'(out_hw) * 51'(c_out_eff);
-    w_end   = 49'(d.w_base) + 49'(k_total) * 49'(n_pad);
-    b_end   = 49'(d.b_base) + 49'(n_pad) * 49'd4;
-
-    // checks per class, in the documented order inside each class
     if (is_argmax) begin
-      param_err = (d.c_in == 16'd0) || (d.c_in > 16'(MAX_ARGMAX_C));
-      dim_err   = 1'b0;
-      addr_err  = (in_end > 49'(ABUF_BYTES));
-    end else if (is_pool) begin
-      param_err = (d.c_in == 16'd0);
-      dim_err   = (d.in_h < 16'd2) || (d.in_w < 16'd2);
-      addr_err  = (in_end > 49'(ABUF_BYTES)) || (out_end > 51'(ABUF_BYTES));
+      a.param_err = (d.c_in == 16'd0) || (d.c_in > 16'(MAX_ARGMAX_C));
+      a.dim_err   = 1'b0;
+      a.align_err = 1'b0;
+    end else if (a.is_pool) begin
+      a.param_err = (d.c_in == 16'd0);
+      a.dim_err   = (d.in_h < 16'd2) || (d.in_w < 16'd2);
+      a.align_err = 1'b0;
     end else begin
-      param_err = (k == 4'd0) || (k > 4'(MAX_KERNEL)) || (pad > 4'(MAX_PAD))
-               || (is_conv && d.stride_m1 != 2'd0)
-               || (d.c_in == 16'd0) || (d.c_out == 16'd0)
-               || (k_total > 22'(MAX_K_TOTAL))
-               || (d.rq_shift == 6'd0) || (d.rq_shift == 6'd63)              // documented range 1..62
-               || (d.rq_mult[31] != 1'b0) || (d.rq_mult[30] != 1'b1)        // [2^30, 2^31)
-               || (d.act_min > d.act_max);                                    // signed compare
-      dim_err   = (17'(in_h) + 17'(pad) * 17'd2 < 17'(k)) || (17'(in_w) + 17'(pad) * 17'd2 < 17'(k));
-      addr_err  = (d.w_base[2:0] != 3'b000) || (d.b_base[2:0] != 3'b000)     // both 8-byte aligned
-               || (in_end > 49'(ABUF_BYTES)) || (out_end > 51'(ABUF_BYTES))
-               || (w_end > 49'(WBUF_BYTES)) || (b_end > 49'(WBUF_BYTES));
+      a.param_err = (k == 4'd0) || (k > 4'(MAX_KERNEL)) || (pad > 4'(MAX_PAD))
+                 || (is_conv && d.stride_m1 != 2'd0)
+                 || (d.c_in == 16'd0) || (d.c_out == 16'd0)
+                 || (d.rq_shift == 6'd0) || (d.rq_shift == 6'd63)             // documented range 1..62
+                 || (d.rq_mult[31] != 1'b0) || (d.rq_mult[30] != 1'b1)       // [2^30, 2^31)
+                 || (d.act_min > d.act_max);                                   // signed compare
+      a.dim_err   = (17'(in_h) + 17'(pad) * 17'd2 < 17'(k)) || (17'(in_w) + 17'(pad) * 17'd2 < 17'(k));
+      a.align_err = (d.w_base[2:0] != 3'b000) || (d.b_base[2:0] != 3'b000);   // both 8-byte aligned
     end
+    return a;
+  endfunction
 
-    if (d.op == OP_NOP)                 return ERR_NONE;
-    if (!is_mac && !is_pool && !is_argmax) return ERR_BAD_OP;
-    if (param_err)                      return ERR_BAD_PARAM;
-    if (dim_err)                        return ERR_BAD_OUT_DIM;
-    if (addr_err)                       return ERR_BAD_ADDR;
+  function automatic chk_b_t check_stage_b(input chk_a_t a);
+    chk_b_t b;
+    b.nop = a.nop; b.bad_op = a.bad_op; b.is_mac = a.is_mac; b.is_pool = a.is_pool;
+    b.param_err = a.param_err || (a.is_mac && a.k_total > 22'(MAX_K_TOTAL));
+    b.dim_err   = a.dim_err;
+    b.align_err = a.align_err;
+    b.in_bytes  = 48'(a.in_hw) * 48'(a.c_in);
+    b.out_bytes = 50'(a.out_hw) * 50'(a.c_out_eff);
+    b.w_bytes   = 39'(a.k_total) * 39'(a.n_pad);
+    b.b_bytes   = {a.n_pad, 2'b00};
+    b.in_base = a.in_base; b.out_base = a.out_base; b.w_base = a.w_base; b.b_base = a.b_base;
+    return b;
+  endfunction
+
+  function automatic err_e check_stage_c(input chk_b_t b);
+    logic in_over, out_over, w_over, b_over, addr_err;
+    in_over  = (49'(b.in_base)  + 49'(b.in_bytes))  > 49'(ABUF_BYTES);
+    out_over = (51'(b.out_base) + 51'(b.out_bytes)) > 51'(ABUF_BYTES);
+    w_over   = (40'(b.w_base)   + 40'(b.w_bytes))   > 40'(WBUF_BYTES);
+    b_over   = (33'(b.b_base)   + 33'(b.b_bytes))   > 33'(WBUF_BYTES);
+    if (b.is_mac)       addr_err = b.align_err || in_over || out_over || w_over || b_over;
+    else if (b.is_pool) addr_err = in_over || out_over;
+    else                addr_err = in_over;                                     // ARGMAX
+    if (b.nop)       return ERR_NONE;
+    if (b.bad_op)    return ERR_BAD_OP;
+    if (b.param_err) return ERR_BAD_PARAM;
+    if (b.dim_err)   return ERR_BAD_OUT_DIM;
+    if (addr_err)    return ERR_BAD_ADDR;
     return ERR_NONE;
   endfunction
 
@@ -169,7 +212,7 @@ module npu_sequencer
   // ---------------------------------------------------------------------------
   // Sequencer FSM
   // ---------------------------------------------------------------------------
-  typedef enum logic [2:0] {S_IDLE, S_FETCH, S_CHECK, S_RUN, S_NEXT} state_e;
+  typedef enum logic [2:0] {S_IDLE, S_FETCH, S_CHK_WAIT, S_CHECK, S_RUN, S_NEXT} state_e;
 
   state_e      state_q;
   logic        busy_q;
@@ -178,7 +221,6 @@ module npu_sequencer
   op_e         active_op_q;
 
   desc_t cur_desc_c;
-  err_e  check_c;
   logic  eng_done_c, eng_err_c;
   err_e  eng_err_code_c;
   logic  start_ok_c;
@@ -199,7 +241,25 @@ module npu_sequencer
   assign fetch_last_c   = desc_rd_valid_i && (fetch_rcv_q == WCNT_W'(DESC_USED_WORDS - 1));
   assign cur_desc_c     = desc_from_words(cur_words_q);
 
-  assign check_c = check_desc(cur_desc_c);
+  // Check pipeline: free running on the fetched descriptor, which is stable
+  // from the end of the fetch until the next layer's fetch.
+  chk_a_t chk_a_q;
+  chk_b_t chk_b_q;
+  err_e   chk_err_q;
+  logic [1:0] chk_wait_q;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      chk_a_q   <= '0;
+      chk_b_q   <= '0;
+      chk_err_q <= ERR_NONE;
+    end else begin
+      chk_a_q   <= check_stage_a(cur_desc_c);
+      chk_b_q   <= check_stage_b(chk_a_q);
+      chk_err_q <= check_stage_c(chk_b_q);
+    end
+  end
+
   assign start_ok_c = start_i && (state_q == S_IDLE) && (layer_cnt_i != 5'd0) && (layer_cnt_i <= 5'(NUM_DESC));
 
   always_comb begin
@@ -233,6 +293,7 @@ module npu_sequencer
       cur_words_q    <= '0;
       fetch_req_q    <= '0;
       fetch_rcv_q    <= '0;
+      chk_wait_q     <= '0;
       conv_start_o   <= 1'b0;
       pool_start_o   <= 1'b0;
       argmax_start_o <= 1'b0;
@@ -267,13 +328,21 @@ module npu_sequencer
             cur_words_q <= {desc_rd_data_i, cur_words_q[DESC_USED_WORDS-1:1]};
             fetch_rcv_q <= fetch_rcv_q + WCNT_W'(1);
           end
-          if (fetch_last_c) state_q <= S_CHECK;
+          if (fetch_last_c) begin
+            chk_wait_q <= 2'(CHECK_LAT - 1);
+            state_q    <= S_CHK_WAIT;
+          end
+        end
+
+        S_CHK_WAIT: begin   // the check pipeline fills
+          if (chk_wait_q == 2'd0) state_q <= S_CHECK;
+          else                    chk_wait_q <= chk_wait_q - 2'd1;
         end
 
         S_CHECK: begin
-          if (check_c != ERR_NONE) begin
+          if (chk_err_q != ERR_NONE) begin
             err_o      <= 1'b1;
-            err_code_o <= check_c;
+            err_code_o <= chk_err_q;
             busy_q     <= 1'b0;
             state_q    <= S_IDLE;
           end else if (cur_desc_c.op == OP_NOP) begin

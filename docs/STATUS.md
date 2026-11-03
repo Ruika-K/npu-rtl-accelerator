@@ -130,6 +130,12 @@ M6 in progress: `chip_top` (reset synchronizers, clock gate, APB bridge, pixel s
 | 2026-11-03 | Verilator 5.020 | `make integ-layers` with the DMA phase | PASS: 68 cases, 22068 checks; 385 AR and 3 AW bursts, zero protocol errors, DMA error codes 2 and 3 |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the DMA | 16 testbenches pass, 106 s |
 | 2026-11-03 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | `make synth-ecp5` | Fails in placement: TRELLIS_COMB 145254 of 83640 (173%), FF 15508, DP16KD 80, MULT18X18D 130 |
+| 2026-11-03 | Yosys 0.33 (GitHub Actions) | `make synth-xilinx`, per-module table | First report 51217 LUT (sequencer 19926, regs 14926); after the M6 area work 21112 LUT, 4287 MUXF, 16878 FF, 112 DSP48E1, 40 RAMB36 (`docs/synthesis.md`) |
+| 2026-11-03 | Verilator 5.020, Python 3.13 | requant narrow tail: `make unit-requant_unit` plus an off-line algorithm check | PASS 122557 checks incl. 2523 saturation-boundary vectors; 415620 algorithm cases equal the golden model; two mutations fail the testbench |
+| 2026-11-03 | Verilator 5.020 | Shared descriptor check: `make unit-npu_sequencer DESC_N=60000` with seeds 11 and 12 | PASS, 120000 random descriptors agree with the Python model; a mutation fails the testbench |
+| 2026-11-03 | Verilator 5.020 | Descriptor fetch: `make unit-npu_sequencer`, `make unit-npu_regs` | PASS: 20650 fetched words with 6917 grant stalls; the table walked twice through the read port under host reads; mutations of the grant priority and of the word order fail |
+| 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the descriptor fetch | 16 testbenches pass; MNIST 18723 cycles per image (+11 per layer for the descriptor fetch), array busy 16288 |
+| 2026-11-03 | Verilator 5.020 | Pipelined descriptor check: `make unit-npu_sequencer` (2000 descriptors, and 60000 each with seeds 11 and 12), `make clean && make ci` | PASS; a mutation of the error priority fails; MNIST 18747 cycles per image (+3 per layer), array busy 16288 |
 
 ## Next steps
 
@@ -162,6 +168,7 @@ Full reasoning in `docs/decisions.md`; this is an index.
 | 2026-10-29 | Verilator as the primary simulator (ADR-010) | Reproducible by anyone, runs in CI |
 | 2026-10-29 | Support both MNIST and CIFAR-10 (ADR-011) | Demonstrates programmability, covers the RGB path |
 | 2026-10-29 | One branch and one pull request per milestone (ADR-013) | The PR history records the engineering process |
+| 2026-11-03 | Synthesis-driven RTL changes: decoded selects, running addresses, descriptor fetch (ADR-016) | The first per-module report showed two thirds of the LUTs in unintended muxes |
 
 ## VCS run log
 

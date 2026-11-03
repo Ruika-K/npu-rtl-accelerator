@@ -265,10 +265,10 @@ structural and worth understanding: C_out = 6 uses only 6 of 8 columns; with W_o
 4 lanes; FC has a single output pixel, uses 1 of 8 rows, and is bound by weight bandwidth (8 bytes of weights per
 cycle support at most 8 MACs). The perf counters record per-layer cycles and array-active cycles.
 
-Measured (`make integ-mnist`, first image): conv1 2846, pool1 1361, conv2 6052, pool2 657, fc1 6130,
-fc2 1426, fc3 220, argmax 31, total 18723 cycles with the array busy for 16288; the differences to the estimate are
-the bias prefetch per n_tile, the pipeline fill and flush per layer, the sequential pool engine and the 11-cycle
-descriptor fetch per layer (M6, section 7.3). Utilization is 35% of peak. See the README for the table.
+Measured (`make integ-mnist`, first image): conv1 2849, pool1 1364, conv2 6055, pool2 660, fc1 6133,
+fc2 1429, fc3 223, argmax 34, total 18747 cycles with the array busy for 16288; the differences to the estimate are
+the bias prefetch per n_tile, the pipeline fill and flush per layer, the sequential pool engine and the
+descriptor fetch and check, 14 cycles per layer (M6, section 7.3). Utilization is 35% of peak. See the README for the table.
 
 ## 6. pool_engine and argmax_engine
 
@@ -330,8 +330,8 @@ ignored and only the low 20 address bits are decoded.
 | `layer_cycles_o[NUM_DESC][31:0]`, `total_cycles_o[31:0]`, `array_busy_cycles_o[31:0]` | Perf counters, cleared on an accepted start; `array_busy_cycles_o` counts busy cycles with `array_valid_i` high |
 | `array_valid_i` | The systolic array's `in_valid`, from conv_engine |
 
-The sequencer fetches the current descriptor's ten words in order (about 11 cycles per layer) into a local
-register and runs the checks on that register. Host reads and sequencer fetches share one 32-bit read mux over
+The sequencer fetches the current descriptor's ten words in order (11 cycles) into a local register and runs the
+checks on that register in a three-stage pipeline (3 cycles), 14 cycles per layer in all. Host reads and sequencer fetches share one 32-bit read mux over
 the table, with the host first. Until M6 the sequencer selected a whole decoded descriptor combinationally out of
 the table; synthesis showed that 16:1 select of a ~300-bit struct was the largest mux in the design, see
 ADR-016 and `docs/synthesis.md`.

@@ -1,39 +1,82 @@
 # NPU RTL accelerator: single entry point for lint and simulation.
 #
 #   make lint        Verilator lint, -Wall, every RTL module as its own top
+#   make model-test  Python golden model self-test
+#   make vectors     Generate Python golden vectors used by the unit testbenches
+#   make unit        Build and run every unit testbench with Verilator
+#   make unit-pe     One unit testbench (unit-<module>)
 #   make smoke       Top-level reset smoke test with Verilator
-#   make ci          lint + smoke (what GitHub Actions runs)
+#   make ci          lint + model-test + unit + smoke (what GitHub Actions runs)
 #
-#   make compile / make run      VCS flow for TOP and FILELIST
+#   make compile / make run      VCS flow for TOP and FILELIST (commercial simulator)
+#   make vcs-unit-<module>       VCS build and run of one unit testbench
 #   make clean
 #
 # All paths are relative to the repository root. Generated files go to build/.
 
 VERILATOR ?= verilator
 VCS       ?= vcs
+PYTHON    ?= python3
 BUILD_DIR ?= build
+SEED      ?= 1
 
-LINT_TOPS ?= npu_top
+# Units: RTL module names that have tb/unit/<module>_tb.sv and
+# sim/filelists/unit_<module>.f
+UNITS     ?= requant_unit pe
+LINT_TOPS ?= npu_top requant_unit pe
+
 RTL_F     ?= sim/filelists/rtl.f
 TOP       ?= npu_top_tb
 FILELIST  ?= sim/filelists/tb.f
+
+REQUANT_N ?= 100000
+VEC_DIR   := $(BUILD_DIR)/vectors
+REQUANT_VECTORS := $(VEC_DIR)/requant_s$(SEED)_n$(REQUANT_N).txt
+PLUSARGS  ?= +seed=$(SEED) +vectors=$(abspath $(REQUANT_VECTORS))
 
 VERILATOR_LINT_FLAGS ?= --lint-only -Wall --timescale 1ns/1ps
 VERILATOR_SIM_FLAGS  ?= --binary --timing -Wall -Wno-fatal --timescale 1ns/1ps -j 0 \
                         --x-assign unique --x-initial unique
 VCS_FLAGS ?= -full64 -sverilog -timescale=1ns/1ps -debug_access+all
 
-# lint-% is a pattern rule; GNU make skips pattern search for .PHONY targets,
-# so it is deliberately not listed here.
-.PHONY: help lint smoke ci compile run clean
+# lint-%, unit-% and vcs-unit-% are pattern rules; GNU make skips pattern
+# search for .PHONY targets, so they are deliberately not listed here.
+.PHONY: help lint model-test vectors unit smoke ci compile run clean
 
 help:
-	@sed -n '2,9p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '2,16p' Makefile | sed 's/^# \{0,1\}//'
 
+# ---------------------------------------------------------------------------
+# Lint
+# ---------------------------------------------------------------------------
 lint: $(addprefix lint-,$(LINT_TOPS))
 
 lint-%:
 	$(VERILATOR) $(VERILATOR_LINT_FLAGS) -f $(RTL_F) --top-module $*
+
+# ---------------------------------------------------------------------------
+# Python golden model
+# ---------------------------------------------------------------------------
+model-test:
+	$(PYTHON) model/test_npu_ref.py
+
+vectors: $(REQUANT_VECTORS)
+
+$(REQUANT_VECTORS): model/gen_requant_vectors.py model/npu_ref.py
+	mkdir -p $(VEC_DIR)
+	$(PYTHON) model/gen_requant_vectors.py --n $(REQUANT_N) --seed $(SEED) -o $@
+
+# ---------------------------------------------------------------------------
+# Verilator simulation
+# ---------------------------------------------------------------------------
+unit: $(addprefix unit-,$(UNITS))
+
+unit-%: vectors
+	mkdir -p $(BUILD_DIR)/verilator $(BUILD_DIR)/logs
+	$(VERILATOR) $(VERILATOR_SIM_FLAGS) -f sim/filelists/unit_$*.f --top-module $*_tb \
+	    --Mdir $(BUILD_DIR)/verilator/$*_tb -o $*_tb
+	$(BUILD_DIR)/verilator/$*_tb/$*_tb $(PLUSARGS) | tee $(BUILD_DIR)/logs/$*_tb.log
+	@grep -q '^PASS' $(BUILD_DIR)/logs/$*_tb.log
 
 smoke:
 	mkdir -p $(BUILD_DIR)/verilator $(BUILD_DIR)/logs
@@ -42,14 +85,21 @@ smoke:
 	$(BUILD_DIR)/verilator/$(TOP)/$(TOP) | tee $(BUILD_DIR)/logs/$(TOP).log
 	@grep -q 'PASS' $(BUILD_DIR)/logs/$(TOP).log
 
-ci: lint smoke
+ci: lint model-test unit smoke
 
+# ---------------------------------------------------------------------------
+# VCS (commercial simulator, optional)
+# ---------------------------------------------------------------------------
 compile:
 	mkdir -p $(BUILD_DIR)/vcs/$(TOP)
 	$(VCS) $(VCS_FLAGS) -f $(FILELIST) -top $(TOP) -o $(BUILD_DIR)/vcs/$(TOP)/simv
 
 run: compile
 	$(BUILD_DIR)/vcs/$(TOP)/simv
+
+vcs-unit-%: vectors
+	$(MAKE) compile TOP=$*_tb FILELIST=sim/filelists/unit_$*.f
+	$(BUILD_DIR)/vcs/$*_tb/simv $(PLUSARGS)
 
 clean:
 	rm -rf $(BUILD_DIR) csrc simv simv.daidir ucli.key vc_hdrs.h DVEfiles

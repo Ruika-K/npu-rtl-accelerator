@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-v1 architecture defined. Next: M1, the requantization unit and the processing element.
+M1 complete: `requant_unit`, `pe`, the requant part of the Python golden model, Verilator CI. Next: M2, the systolic array.
 
 ## Completed
 
@@ -12,24 +12,44 @@ v1 architecture defined. Next: M1, the requantization unit and the processing el
 - v1 architecture defined (2026-10-29): `docs/architecture.md`, `docs/programming_model.md`, `docs/verification.md`,
   `docs/decisions.md`. Key points: descriptor-driven, INT8 integer inference, 8x8 output-stationary systolic array,
   AXI4-Lite host interface, bit-exact Python golden model, Verilator CI.
+- M1 (2026-11-03):
+  - RTL: `rtl/npu_pkg.sv` (parameters, opcodes, error codes, `desc_t`, address-map constants),
+    `rtl/compute/requant_unit.sv` (3-stage pipeline), `rtl/compute/pe.sv`. All three tops lint clean under Verilator `-Wall`.
+  - Model: `model/npu_ref.py` (`requant`, `quantize_multiplier`, `pe_mac` / `pe_tile`),
+    `model/gen_requant_vectors.py`, `model/test_npu_ref.py` (21 hand-computed cases).
+  - Testbenches: `tb/common/npu_tb_pkg.sv` (SV reference functions), `tb/unit/requant_unit_tb.sv`, `tb/unit/pe_tb.sv`.
+  - Flow: Makefile targets `lint` / `model-test` / `vectors` / `unit` / `smoke` / `ci` and `vcs-unit-<module>`;
+    one filelist per unit testbench; GitHub Actions runs `make ci`.
 
 ## Milestone plan
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
-| M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches | Not started |
+| M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches | Done |
 | M2 | `systolic_array` GEMM checked against numpy | Not started |
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Not started |
 | M4 | `act_buffer`, `weight_buffer`, `conv_addr_gen`, `conv_engine`, `pool_engine`, `argmax_engine`; single layers bit-exact | Not started |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | Not started |
 | M6 | Optional: AXI4 master DMA, `chip_top` (CDC / configuration bridge / clock gating), FPGA synthesis data | Not started |
 
+## Verification evidence
+
+| Date | Tool | Command | Result |
+| --- | --- | --- | --- |
+| 2026-11-03 | Verilator 5.020, Python 3.13 | `make lint` | `npu_top`, `requant_unit`, `pe`: zero warnings under `-Wall` |
+| 2026-11-03 | Python 3.13 | `make model-test` | 21 hand-computed requant cases, PE extreme-value tiles, `quantize_multiplier` normalization all pass |
+| 2026-11-03 | Verilator 5.020 | `make unit-requant_unit` (seed 1) | PASS, 120034 checked: 22 hand-computed, 20000 random, 100012 Python vectors; latency fixed at 3 cycles |
+| 2026-11-03 | Verilator 5.020 | `make unit-pe` (seed 1) | PASS, 2006 tiles including K = 1 and int8 extremes; forwarding delay checked every cycle |
+| 2026-11-03 | Verilator 5.020 | `make unit SEED=7 REQUANT_N=20000` (testbench seed and Python vectors regenerated) | Both testbenches PASS |
+| 2026-11-03 | Verilator 5.020 | Negative test: one Python vector's expected value corrupted | Testbench reports FAIL, proving the checker works |
+| 2026-11-03 | Verilator 5.020 | `make clean && make ci` | All pass; this is the full GitHub Actions flow |
+| 2026-11-03 | Verilator 5.020 | `make smoke` | SMOKE PASS |
+
 ## Next steps
 
-1. Review the four v1 documents and freeze the interfaces.
-2. M1: `rtl/npu_pkg.sv`, `rtl/compute/requant_unit.sv`, `rtl/compute/pe.sv`, the requant function of
-   `model/npu_ref.py`, unit testbenches, Verilator unit-test targets in the Makefile and CI.
-3. Run the same filelists with VCS and record the results in the table below.
+1. M2: `rtl/compute/systolic_array.sv` with edge skew, shadow column drain and the `P = max(K_total, ARR_N)` idle-cycle rule;
+   a GEMM reference in `model/npu_ref.py`; a unit testbench covering K from 1 to 512 and M both a multiple of 8 and not.
+2. Run `make vcs-unit-requant_unit` and `make vcs-unit-pe` with VCS and record the results in the table below.
 
 ## Known limitations
 

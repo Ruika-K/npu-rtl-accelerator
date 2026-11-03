@@ -20,5 +20,19 @@ jobs:
       - name: Lint RTL
         run: make lint
 
+      - name: Python golden model self-test
+        run: make model-test
+
+      - name: Unit testbenches
+        run: make unit
+
       - name: Top-level smoke test
         run: make smoke
+
+      - name: Upload simulation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-logs
+          path: build/logs/
+          if-no-files-found: ignore

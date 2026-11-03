@@ -24,14 +24,19 @@ reproduce with open-source tools.
 ```text
 .
 ├── rtl/                     # Synthesizable SystemVerilog
-│   └── npu_top.sv
+│   ├── npu_pkg.sv           # Parameters, encodings, descriptor type
+│   ├── npu_top.sv
+│   └── compute/             # requant_unit, pe (host/, ctrl/, mem/ follow in later milestones)
 ├── tb/
+│   ├── common/              # SV reference functions mirroring the Python model
+│   ├── unit/                # One self-checking testbench per module
 │   └── npu_top_tb.sv
+├── model/                   # Python integer golden model, vector generators, self-test
 ├── sim/filelists/           # Filelists shared by Verilator and VCS
 ├── docs/                    # Architecture, programming model, verification plan, decisions, status
 ├── .github/workflows/       # CI
 ├── CONTRIBUTING.md          # Engineering conventions
-└── Makefile                 # lint / smoke / ci targets
+└── Makefile                 # lint / unit / smoke / ci targets
 ```
 
 ## Quick start
@@ -39,13 +44,17 @@ reproduce with open-source tools.
 Requirements: Verilator 5.x and Python 3 (no other dependencies for simulation).
 
 ```sh
-make ci                 # lint + smoke test
+make ci                 # lint + Python self-test + all unit testbenches + smoke test
+```
+
+```sh
+make unit-requant_unit  # one unit testbench
 ```
 
 With a commercial simulator (VCS) the same filelists are used:
 
 ```sh
-make compile && make run
+make vcs-unit-pe
 ```
 
 ## Documentation
@@ -62,8 +71,8 @@ make compile && make run
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
-| M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches, Verilator CI | Next |
-| M2 | `systolic_array` GEMM checked against numpy | |
+| M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches, Verilator CI | Done |
+| M2 | `systolic_array` GEMM checked against numpy | Next |
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | |
 | M4 | `act_buffer`, `weight_buffer`, `conv_addr_gen`, `conv_engine`, `pool_engine`, `argmax_engine`; single layers bit-exact | |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, performance table | |

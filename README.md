@@ -25,14 +25,15 @@ reproduce with open-source tools.
 .
 ├── rtl/                     # Synthesizable SystemVerilog
 │   ├── npu_pkg.sv           # Parameters, encodings, descriptor type
-│   ├── npu_top.sv
-│   ├── compute/             # requant_unit, pe, systolic_array
-│   ├── host/                # axil_slave, npu_regs
-│   └── ctrl/                # npu_sequencer (mem/ and the engines follow in M4)
+│   ├── npu_top.sv           # Top level: host path, sequencer, engines, memories, port muxes
+│   ├── compute/             # requant_unit, pe, systolic_array, conv_engine, pool_engine, argmax_engine
+│   ├── host/                # axil_slave, npu_regs, host_mem_adapter
+│   ├── ctrl/                # npu_sequencer
+│   └── mem/                 # sram_1r1w, act_buffer, weight_buffer
 ├── tb/
 │   ├── common/              # SV reference functions, AXI4-Lite master BFM
 │   ├── unit/                # One self-checking testbench per module
-│   └── npu_top_tb.sv
+│   └── integration/         # npu_top through AXI4-Lite
 ├── model/                   # Python integer golden model, vector generators, self-test
 ├── sim/filelists/           # Filelists shared by Verilator and VCS
 ├── docs/                    # Architecture, programming model, verification plan, decisions, status
@@ -46,7 +47,7 @@ reproduce with open-source tools.
 Requirements: Verilator 5.x and Python 3 (no other dependencies for simulation).
 
 ```sh
-make ci                 # lint + Python self-test + all unit testbenches + smoke test
+make ci                 # lint + Python self-test + all unit testbenches + top-level integration test
 ```
 
 ```sh
@@ -76,8 +77,8 @@ make vcs-unit-pe
 | M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches, Verilator CI | Done |
 | M2 | `systolic_array` GEMM checked against the Python integer model | Done |
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
-| M4 | `act_buffer`, `weight_buffer`, `conv_addr_gen`, `conv_engine`, `pool_engine`, `argmax_engine`; single layers bit-exact | Next |
-| M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, performance table | |
+| M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact through AXI4-Lite | Done |
+| M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, performance table | Next |
 | M6 | Optional: AXI4 master DMA, `chip_top` (CDC, configuration bridge, clock gating), FPGA synthesis numbers | |
 
 ## Originality

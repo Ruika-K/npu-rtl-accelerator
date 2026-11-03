@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M3 complete: AXI4-Lite slave, register file with descriptor table, and layer sequencer, all unit-tested. Next: M4, the memories and the engines.
+M4 complete: memories, the three engines and `npu_top` are integrated; single layers are bit-exact through AXI4-Lite. Next: M5, LeNet-5 end to end on MNIST and CIFAR-10.
 
 ## Completed
 
@@ -41,6 +41,18 @@ M3 complete: AXI4-Lite slave, register file with descriptor table, and layer seq
   - Spec refinements recorded in `programming_model.md`: START clears DONE / ERR / ERR_CODE / RESULT.VALID;
     error 0x02 also covers PAD > 7, RQ_SHIFT, RQ_MULT range and ACT_MIN > ACT_MAX; check order documented.
 
+- M4 (2026-11-03):
+  - RTL: `rtl/mem/sram_1r1w.sv`, `act_buffer.sv` (8 byte banks, unaligned 8-byte access, 2-cycle reads),
+    `weight_buffer.sv`; `rtl/host/host_mem_adapter.sv`; `rtl/compute/conv_engine.sv` (tile loops with
+    incremental addressing, latency-matched pipeline into the systolic array, tile queue, double-buffered bias
+    prefetch, 8 requant lanes, write-back), `pool_engine.sv`, `argmax_engine.sv`; `rtl/npu_top.sv` wiring the
+    host path, sequencer, engines, memories and the busy-driven port muxes. All lint clean under `-Wall`.
+  - Spec refinement: `b_base` is 8-byte aligned (sequencer, model, docs).
+  - Model: `conv2d_layer`, `fc_layer`, `maxpool2x2`, `argmax`, memory-image helpers; `model/gen_layer_vectors.py`.
+  - Testbenches: `tb/unit/act_buffer_tb.sv`, `conv_engine_tb.sv`, `pool_engine_tb.sv`, `argmax_engine_tb.sv`
+    (real memories, guard bands); `tb/integration/npu_top_tb.sv` replaces the reset smoke test and drives
+    everything through AXI4-Lite (`make integ`).
+
 ## Milestone plan
 
 | Milestone | Scope | Status |
@@ -48,7 +60,7 @@ M3 complete: AXI4-Lite slave, register file with descriptor table, and layer seq
 | M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches | Done |
 | M2 | `systolic_array` GEMM checked against the Python integer model | Done |
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
-| M4 | `act_buffer`, `weight_buffer`, `conv_addr_gen`, `conv_engine`, `pool_engine`, `argmax_engine`; single layers bit-exact | Not started |
+| M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | Not started |
 | M6 | Optional: AXI4 master DMA, `chip_top` (CDC / configuration bridge / clock gating), FPGA synthesis data | Not started |
 
@@ -75,14 +87,21 @@ M3 complete: AXI4-Lite slave, register file with descriptor table, and layer seq
 | 2026-11-03 | Verilator 5.020 | The three M3 testbenches with `SEED=7` | PASS |
 | 2026-11-03 | Verilator 5.020 | Negative tests: one Python descriptor code flipped; register TB copy with a wrong expected ID | Both report FAIL |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after M3 | All pass, 47 s |
+| 2026-11-03 | Verilator 5.020 | `make unit-act_buffer` | PASS, 13386 unaligned reads against a byte model, 2-cycle latency |
+| 2026-11-03 | Verilator 5.020 | `make unit-conv_engine` | PASS, 40 CONV2D / FC cases (K 1..7, pad 0..3, partial tiles, FC up to 400x120) bit-exact, 17648 bytes incl. guard bands; cycle counts match the section 5.5 model (FC 400->120: 6115 cycles) |
+| 2026-11-03 | Verilator 5.020 | `make unit-pool_engine`, `make unit-argmax_engine` | PASS, 14 pool cases incl. odd sizes, 14 argmax cases incl. ties |
+| 2026-11-03 | Verilator 5.020 | `make integ` | PASS, 68 single-layer cases through AXI4-Lite, 21870 checks; error descriptor, host access while busy, perf counters, irq |
+| 2026-11-03 | Verilator 5.020 | The M4 testbenches with `SEED=7` | PASS |
+| 2026-11-03 | Verilator 5.020 | Negative test: one expected output byte corrupted in the layer vectors | `make integ` reports FAIL |
+| 2026-11-03 | Verilator 5.020 | `make clean && make ci` after M4 | All 12 testbenches pass, 78 s |
 
 ## Next steps
 
-1. M4: `rtl/mem/sram_1r1w.sv`, `act_buffer.sv` (8 byte banks, unaligned 8-byte access), `weight_buffer.sv`, the
-   32-bit host port adapter, `conv_addr_gen.sv`, `conv_engine.sv` (bias prefetch, tile loop, drain, requant x8,
-   writer), `pool_engine.sv`, `argmax_engine.sv`, and `npu_top.sv` wiring everything; Python conv2d / maxpool /
-   argmax reference; single-layer integration testbenches loading through AXI4-Lite and comparing bit-exact.
-2. Run `make vcs-unit-<module>` for the six units with VCS and record the results in the table below.
+1. M5: `model/train_lenet.py` (PyTorch, MNIST and CIFAR-10), `model/quantize.py` (post-training quantization,
+   zero-point folding, weight blob and descriptor export), committed `model/data/<net>/` images and vectors,
+   `npu_ref.py` network runner, top-level LeNet-5 test (layer-by-layer bit-exact, then 100 images with the same
+   accuracy as the model), README performance table from the perf counters.
+2. Run the unit and integration testbenches with VCS and record the results in the table below.
 
 ## Known limitations
 

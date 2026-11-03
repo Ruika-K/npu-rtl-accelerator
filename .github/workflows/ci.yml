@@ -26,8 +26,8 @@ jobs:
       - name: Unit testbenches
         run: make unit
 
-      - name: Top-level smoke test
-        run: make smoke
+      - name: Top-level integration test
+        run: make integ
 
       - name: Upload simulation logs
         if: always()

@@ -5,8 +5,8 @@
 #   make vectors     Generate Python golden vectors used by the unit testbenches
 #   make unit        Build and run every unit testbench with Verilator
 #   make unit-pe     One unit testbench (unit-<module>)
-#   make smoke       Top-level reset smoke test with Verilator
-#   make ci          lint + model-test + unit + smoke (what GitHub Actions runs)
+#   make integ       Top-level integration test through AXI4-Lite with Verilator
+#   make ci          lint + model-test + unit + integ (what GitHub Actions runs)
 #
 #   make compile / make run      VCS flow for TOP and FILELIST (commercial simulator)
 #   make vcs-unit-<module>       VCS build and run of one unit testbench
@@ -50,7 +50,7 @@ VCS_FLAGS ?= -full64 -sverilog -timescale=1ns/1ps -debug_access+all
 
 # lint-%, unit-% and vcs-unit-% are pattern rules; GNU make skips pattern
 # search for .PHONY targets, so they are deliberately not listed here.
-.PHONY: help lint model-test vectors unit smoke ci compile run clean
+.PHONY: help lint model-test vectors unit integ ci compile run clean
 
 help:
 	@sed -n '2,16p' Makefile | sed 's/^# \{0,1\}//'
@@ -99,14 +99,14 @@ unit-%: vectors
 	$(BUILD_DIR)/verilator/$*_tb/$*_tb $(PLUSARGS) | tee $(BUILD_DIR)/logs/$*_tb.log
 	@grep -q '^PASS' $(BUILD_DIR)/logs/$*_tb.log
 
-smoke:
+integ: vectors
 	mkdir -p $(BUILD_DIR)/verilator $(BUILD_DIR)/logs
-	$(VERILATOR) $(VERILATOR_SIM_FLAGS) -f $(FILELIST) --top-module $(TOP) \
-	    --Mdir $(BUILD_DIR)/verilator/$(TOP) -o $(TOP)
-	$(BUILD_DIR)/verilator/$(TOP)/$(TOP) | tee $(BUILD_DIR)/logs/$(TOP).log
-	@grep -q 'PASS' $(BUILD_DIR)/logs/$(TOP).log
+	$(VERILATOR) $(VERILATOR_SIM_FLAGS) -f sim/filelists/integ_npu_top.f --top-module npu_top_tb \
+	    --Mdir $(BUILD_DIR)/verilator/npu_top_tb -o npu_top_tb
+	$(BUILD_DIR)/verilator/npu_top_tb/npu_top_tb $(PLUSARGS) | tee $(BUILD_DIR)/logs/npu_top_tb.log
+	@grep -q '^PASS' $(BUILD_DIR)/logs/npu_top_tb.log
 
-ci: lint model-test unit smoke
+ci: lint model-test unit integ
 
 # ---------------------------------------------------------------------------
 # VCS (commercial simulator, optional)

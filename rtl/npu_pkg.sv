@@ -148,6 +148,23 @@ package npu_pkg;
     return d;
   endfunction
 
+  // Inverse of desc_from_words: the words a host writes for a descriptor.
+  function automatic desc_words_t desc_to_words(input desc_t d);
+    desc_words_t w;
+    w = '0;
+    w[0] = {18'h0, d.stride_m1, d.pad, d.k, d.op};
+    w[1] = {d.in_w, d.in_h};
+    w[2] = {d.c_out, d.c_in};
+    w[3] = d.in_base;
+    w[4] = d.out_base;
+    w[5] = d.w_base;
+    w[6] = d.b_base;
+    w[7] = d.rq_mult;
+    w[8] = {26'h0, d.rq_shift};
+    w[9] = {d.act_max, d.act_min, d.z_out, d.z_in};
+    return w;
+  endfunction
+
   function automatic logic [31:0] desc_word_mask(input int unsigned idx);
     case (idx)
       0:       return DESC_W0_MASK;

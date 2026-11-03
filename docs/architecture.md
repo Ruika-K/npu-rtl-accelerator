@@ -234,9 +234,18 @@ for n_tile in 0 .. ceil(C_out / 8) - 1:
             drain 8 columns -> requant x8 -> write out_base + n*H_out*W_out + oh*W_out + ow0, lane mask ow0+i < W_out
 ```
 
-- Read addresses and control flags go through a pipeline matched to the SRAM read latency before entering the array.
+- Read addresses and control flags go through a pipeline matched to the SRAM read latency before entering the array:
+  the generator registers a beat, the activation read is issued from it and returns ABUF_RD_LAT cycles later, the
+  weight word (WBUF_RD_LAT) is held one cycle to line up, and the masked activation vector, the weight vector and
+  the flags are registered once more into the array.
+- The inner loop uses only adders: `ci*H*W` and `kh*W` are kept as running offsets; the multiplications for the
+  tile's column base happen once per tile.
+- Tile coordinates are pushed into a small queue at tile start and popped when the tile's drain begins, so the
+  write-back knows the channel, the row and the lane mask of what it is draining.
 - Write-back overlaps the next tile's compute, because the drain takes only 8 cycles and `P >= 8`.
 - Drained results for padding columns `n >= C_out` are discarded.
+- Done is pulsed a fixed `2N + 8` cycles after the last beat, which covers skew, drain, the requant pipeline and
+  the last write.
 
 ### 5.5 Throughput estimate (LeNet-5 MNIST, cycles)
 
@@ -259,10 +268,13 @@ README can report measured numbers.
 
 ## 6. pool_engine and argmax_engine
 
-- `pool_engine`: for each channel and each output row, reads input rows 2r and 2r+1, 16 bytes each (two 8-byte
-  reads), produces 8 outputs and does one 8-byte write. Output size rounds down, as PyTorch does by default.
-- `argmax_engine`: reads `c_in` int8 values (v1 limit c_in <= 16) from `in_base`, compares signed, writes the index
-  to the RESULT register and the first 16 logits to the LOGITS registers for debugging.
+- `pool_engine`: for each channel, each output row and each group of 8 output columns, reads input rows 2r and 2r+1,
+  16 bytes each (two 8-byte reads), produces 8 outputs with signed compares and does one 8-byte write with a lane
+  mask at the end of the row. Output size rounds down, as PyTorch does by default. Reads past the end of a row only
+  feed masked lanes. About 7 cycles per 8 outputs; the engine is a small sequential FSM, not pipelined.
+- `argmax_engine`: reads `c_in` int8 values (v1 limit c_in <= 16) from `in_base` with two 8-byte reads, scans them
+  sequentially with signed compares (ties to the lowest index), and reports the index and the 16 logits (lanes
+  beyond `c_in` as 0) to the register file with a single-cycle valid. Nothing is written to memory.
 
 ## 7. Module interfaces
 
@@ -298,7 +310,8 @@ ignored and only the low 20 address bits are decoded.
 | `hm_addr_o[19:0]`, `hm_wdata_o[31:0]`, `hm_be_o[3:0]` | Byte offset inside the selected buffer (4-byte aligned), write data, byte enables |
 | `hm_ack_i`, `hm_rdata_i[31:0]` | Completion, at least one cycle after the request |
 
-The adapter from this 32-bit port to the 64-bit buffer ports is part of M4.
+`host_mem_adapter` turns this 32-bit port into the 64-bit buffer ports: an activation access is an unaligned
+8-byte access whose lanes 0..3 carry the word, a weight access selects the half of a 64-bit word by address bit 2.
 
 ### 7.3 npu_regs to npu_sequencer
 
@@ -316,7 +329,9 @@ and drives `irq_o = DONE & IRQ_EN`.
 ### 7.4 npu_sequencer to the engines
 
 One `eng_desc_o` (the current layer's `desc_t`, held for the whole layer) shared by the engines, and per engine a
-`start` pulse plus `done` (pulse), `err` (pulse) and `err_code` back. CONV2D and FC both start `conv_engine`; FC is
+`start` pulse plus `done` (pulse), `err` (pulse) and `err_code` back. Each engine also exposes `busy_o`, which
+`npu_top` uses to hand the memory ports to the active engine (conv, then pool, then argmax, then the host); the
+engines never report errors in v1, since the sequencer validates everything they depend on. CONV2D and FC both start `conv_engine`; FC is
 forwarded as a 1x1 CONV2D with `in_h = in_w = 1`, `pad = 0`, stride 0. All static descriptor checks (opcode,
 parameter ranges, output size, address ranges and alignment) are done once in the sequencer before the start pulse,
 in the order ERR_BAD_OP, ERR_BAD_PARAM, ERR_BAD_OUT_DIM, ERR_BAD_ADDR; an engine only reports errors it detects

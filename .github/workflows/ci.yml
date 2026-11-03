@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verilator:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Verilator
+        run: sudo apt-get update && sudo apt-get install --yes verilator
+
+      - name: Tool versions
+        run: verilator --version && python3 --version
+
+      - name: Lint RTL
+        run: make lint
+
+      - name: Top-level smoke test
+        run: make smoke

@@ -62,6 +62,10 @@ jobs:
             echo '```'
             python3 synth/nextpnr_summary.py build/synth/nextpnr.log
             echo '```'
+            echo 'Yosys ABC warnings (with the pass they come from):'
+            echo '```'
+            awk '/^[0-9.]+ Executing/{h=$0} /ABC: execution of command/{print h; print}' build/synth/ecp5.log | head -20
+            echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload reports

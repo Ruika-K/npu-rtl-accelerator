@@ -54,30 +54,46 @@ def main():
         return
     i = starts[-1]
     print()
-    print("Critical path (one line per signal; delay of the segment, arrival time):")
-    groups = []   # [path, signal, cells, first_total, last_total]
-    split = ""
+    print("Critical path (one line per run of the same signal; segment delay, arrival time):")
+    steps = []    # [label, total]
+    start_cell = end_cell = split = ""
+    cur_cell = ""
     for l in text[i + 2 :]:
         if re.match(r"^[\d.]+ ns logic, [\d.]+ ns routing", l.strip()):
             split = l.strip()
             break
         m = re.match(r"^\s*([\d.]+)\s+([\d.]+)\s+Source\s+(\S+)", l)
         if m:
-            total = float(m.group(2))
-            path, sig = signal_of(m.group(3))
-            if groups and groups[-1][0] == path and groups[-1][1] == sig:
-                groups[-1][2] += 1
-                groups[-1][4] = total
-            else:
-                groups.append([path, sig, 1, total, total])
+            cur_cell = m.group(3)
+            start_cell = start_cell or cur_cell
+            steps.append(["%s: %s" % signal_of(cur_cell), float(m.group(2))])
             continue
-        m = re.match(r"^\s*([\d.]+)\s+([\d.]+)\s+Net\s", l)
-        if m and groups:
-            groups[-1][4] = float(m.group(2))
+        m = re.match(r"^\s*([\d.]+)\s+([\d.]+)\s+Net\s+(\S+)", l)
+        if m and steps:
+            net = m.group(3)
+            # a net that kept its RTL name is a better label than an ABC cell name
+            if not net.startswith("$") and "$abc$" not in net:
+                steps[-1][0] = "%s: %s" % signal_of(net.split("[")[0])
+            steps[-1][1] = float(m.group(2))
+            continue
+        m = re.match(r"^\s*([\d.]+)\s+([\d.]+)\s+Setup\s+(\S+)", l)
+        if m:
+            end_cell = m.group(3)
+            if steps:
+                steps[-1][1] = float(m.group(2))
+    groups = []   # [label, cells, arrival]
+    for label, total in steps:
+        if groups and groups[-1][0] == label:
+            groups[-1][1] += 1
+            groups[-1][2] = total
+        else:
+            groups.append([label, 1, total])
+    print(f"  from {start_cell}")
     prev = 0.0
-    for path, sig, cells, _, last in groups:
-        print(f"  {last - prev:6.2f} {last:7.2f} ns  {path}: {sig} ({cells} cell{'s' if cells > 1 else ''})")
-        prev = last
+    for label, cells, arrival in groups:
+        print(f"  {arrival - prev:6.2f} {arrival:7.2f} ns  {label} ({cells} cell{'s' if cells > 1 else ''})")
+        prev = arrival
+    print(f"  to   {end_cell}")
     if split:
         print(f"  {split}")
 

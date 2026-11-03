@@ -388,3 +388,94 @@ def argmax(logits):
         if v > best:
             best, best_i = v, i
     return best_i
+
+
+# ---------------------------------------------------------------------------
+# Programs: a descriptor list executed against the two memories, exactly as the
+# hardware does (programming_model.md sections 3 to 6)
+# ---------------------------------------------------------------------------
+
+def _read_u8(mem, base, n):
+    return [mem[base + i] for i in range(n)]
+
+
+def _write_u8(mem, base, data):
+    for i, b in enumerate(data):
+        mem[base + i] = b & 0xFF
+
+
+def unpack_weights(data, cout, cin, k, n=ARR_N):
+    """Inverse of pack_weights: bytes of W[K_total][N_pad] -> w[cout][cin][k][k]."""
+    n_pad = (cout + n - 1) // n * n
+    w = [[[[0] * k for _ in range(k)] for _ in range(cin)] for _ in range(cout)]
+    i = 0
+    for ci in range(cin):
+        for kh in range(k):
+            for kw in range(k):
+                for co in range(n_pad):
+                    if co < cout:
+                        w[co][ci][kh][kw] = from_u8(data[i])
+                    i += 1
+    return w
+
+
+def unpack_bias(data, cout):
+    out = []
+    for co in range(cout):
+        v = data[4 * co] | (data[4 * co + 1] << 8) | (data[4 * co + 2] << 16) | (data[4 * co + 3] << 24)
+        out.append(v - (1 << 32) if v >= (1 << 31) else v)
+    return out
+
+
+def run_program(descs, abuf, wbuf):
+    """Execute descriptor dicts in order against bytearrays abuf / wbuf.
+
+    Returns {"result": argmax index or None, "logits": [...], "layers": [(out_base, nbytes), ...]}.
+    The memories are modified in place, like the hardware's act_buffer.
+    """
+    result, logits, layers = None, [], []
+    for d in descs:
+        code = desc_check(d)
+        if code != ERR_NONE:
+            raise ValueError(f"descriptor rejected with error code {code}: {d}")
+        op = d["op"]
+        if op == OP_NOP:
+            layers.append((0, 0))
+        elif op in (OP_CONV2D, OP_FC):
+            fc = op == OP_FC
+            k = 1 if fc else d["k"]
+            pad = 0 if fc else d["pad"]
+            h = 1 if fc else d["in_h"]
+            w = 1 if fc else d["in_w"]
+            cin, cout = d["c_in"], d["c_out"]
+            k_total = cin * k * k
+            n_pad = pad_to_arr(cout)
+            x = bytes_to_chw(_read_u8(abuf, d["in_base"], cin * h * w), cin, h, w)
+            wt = unpack_weights(_read_u8(wbuf, d["w_base"], k_total * n_pad), cout, cin, k)
+            bias = unpack_bias(_read_u8(wbuf, d["b_base"], n_pad * 4), cout)
+            out = conv2d_layer(x, wt, bias, k, pad, d["z_in"], d["rq_mult"], d["rq_shift"], d["z_out"],
+                               d["act_min"], d["act_max"])
+            data = chw_bytes(out)
+            _write_u8(abuf, d["out_base"], data)
+            layers.append((d["out_base"], len(data)))
+        elif op == OP_MAXPOOL2X2:
+            c, h, w = d["c_in"], d["in_h"], d["in_w"]
+            x = bytes_to_chw(_read_u8(abuf, d["in_base"], c * h * w), c, h, w)
+            data = chw_bytes(maxpool2x2(x))
+            _write_u8(abuf, d["out_base"], data)
+            layers.append((d["out_base"], len(data)))
+        elif op == OP_ARGMAX:
+            raw = _read_u8(abuf, d["in_base"], d["c_in"])
+            logits = [from_u8(b) for b in raw]
+            result = argmax(logits)
+            layers.append((0, 0))
+    return {"result": result, "logits": logits, "layers": layers}
+
+
+def make_desc(op, **f):
+    """Descriptor dict with every field present (unused ones zero)."""
+    d = {name: 0 for name in DESC_FIELDS}
+    d.update({"act_min": -128, "act_max": 127})
+    d["op"] = op
+    d.update(f)
+    return d

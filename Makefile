@@ -164,8 +164,8 @@ synth-ecp5: $(SYNTH_DIR)/npu_top.v
 	$(YOSYS) -q -l $(SYNTH_DIR)/ecp5.log -s synth/ecp5.ys
 	$(NEXTPNR_ECP5) --85k --package CABGA381 --speed 8 --json $(SYNTH_DIR)/npu_top_ecp5.json \
 	    --freq 100 --timing-allow-fail --seed 1 --log $(SYNTH_DIR)/nextpnr.log > /dev/null 2>&1 \
-	    || { grep -E "ERROR|TRELLIS_COMB|TRELLIS_FF|DP16KD|MULT18X18D" $(SYNTH_DIR)/nextpnr.log; exit 1; }
-	@grep -E "Max frequency|TRELLIS_COMB|TRELLIS_FF|DP16KD|MULT18X18D" $(SYNTH_DIR)/nextpnr.log | tail -8
+	    || { python3 synth/nextpnr_summary.py $(SYNTH_DIR)/nextpnr.log; exit 1; }
+	@python3 synth/nextpnr_summary.py $(SYNTH_DIR)/nextpnr.log
 
 synth: synth-xilinx synth-ecp5
 

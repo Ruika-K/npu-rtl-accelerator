@@ -60,7 +60,7 @@ jobs:
           {
             echo '## ECP5 LFE5U-85F, nextpnr-ecp5 --freq 100'
             echo '```'
-            grep -E "Max frequency|TRELLIS_COMB|TRELLIS_FF|DP16KD|MULT18X18D|ERROR" build/synth/nextpnr.log | sed 's/^Info: *//' | tail -12
+            python3 synth/nextpnr_summary.py build/synth/nextpnr.log
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 

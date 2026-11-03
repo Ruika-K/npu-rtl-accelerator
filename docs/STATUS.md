@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M6 in progress: `chip_top` (reset synchronizers, clock gate, APB bridge, pixel stream across clock domains) and the AXI4 master DMA are done and verified. The open-source synthesis flow runs in CI; the xc7 resource report works, but the default configuration does not fit the ECP5-85k (LUT4 at 173%), so the area is being reduced before the numbers go into `docs/synthesis.md`. CIFAR-10 still waits for its dataset.
+M6 complete on `feat/m6-synthesis`, waiting for review: the open-source synthesis flow reports area per module on every push and places and routes the core on the ECP5-85k (`docs/synthesis.md`); the first report drove a round of RTL changes (ADR-016) that cut the logic by more than half; `chip_top` and the AXI4 master DMA are done and verified. CIFAR-10 still waits for its dataset.
 
 ## Completed
 
@@ -66,8 +66,13 @@ M6 in progress: `chip_top` (reset synchronizers, clock gate, APB bridge, pixel s
   - README performance table from the counters: 18635 cycles per image, 35% of peak.
 
 - M6 (2026-11-03):
-  - Synthesis: `synth/` scripts and `.github/workflows/synth.yml` (sv2v + Yosys `synth_xilinx` for resources,
-    Yosys `synth_ecp5` + nextpnr-ecp5 for a post-route Fmax), results in `docs/synthesis.md`.
+  - Synthesis: `synth/` scripts and `.github/workflows/synth.yml` (sv2v + Yosys `synth_xilinx` with a per-module
+    table, Yosys `synth_ecp5 -abc9` + nextpnr-ecp5 on an out-of-context wrapper with a critical-path summary),
+    results and history in `docs/synthesis.md`.
+  - Synthesis-driven RTL changes (ADR-016): one-hot or power-of-two-stride selects of wide arrays, running
+    addresses in `conv_engine`, a narrow and then two-stage requant tail (latency 4), a shared descriptor-check
+    datapath pipelined over three stages, and the sequencer fetching the current descriptor word by word through
+    the register file's read port. xc7 51.2K -> 21.5K LUT; ECP5 from 173% to 42% of the LUT4s, routed.
   - `rtl/chip/`: `rst_sync`, `clk_gate`, `cdc_sync`, `async_fifo` (Gray pointers), `apb2axil`, `pix_writer`,
     `chip_regs`, `chip_top`; `npu_top` gained a stream write port granted while idle.
   - Testbenches: `tb/unit/async_fifo_tb.sv` (six clock ratios, 24k words), `tb/unit/pix_writer_tb.sv` (208 frames),
@@ -89,7 +94,7 @@ M6 in progress: `chip_top` (reset synchronizers, clock gate, APB bridge, pixel s
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | MNIST done; CIFAR-10 pending dataset |
-| M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | chip_top and DMA done; synthesis flow done, area reduction for ECP5 in progress |
+| M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | Done (PR open) |
 
 ## Verification evidence
 
@@ -135,6 +140,7 @@ M6 in progress: `chip_top` (reset synchronizers, clock gate, APB bridge, pixel s
 | 2026-11-03 | Verilator 5.020 | Shared descriptor check: `make unit-npu_sequencer DESC_N=60000` with seeds 11 and 12 | PASS, 120000 random descriptors agree with the Python model; a mutation fails the testbench |
 | 2026-11-03 | Verilator 5.020 | Descriptor fetch: `make unit-npu_sequencer`, `make unit-npu_regs` | PASS: 20650 fetched words with 6917 grant stalls; the table walked twice through the read port under host reads; mutations of the grant priority and of the word order fail |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the descriptor fetch | 16 testbenches pass; MNIST 18723 cycles per image (+11 per layer for the descriptor fetch), array busy 16288 |
+| 2026-11-03 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | `make synth-ecp5` (`synth_ecp5 -abc9`, out-of-context wrapper) | Routed: `d08daa1` 33752 LUT4 cells (40%), 28.8 MHz; `95e6fe1` 42.4 MHz; `cd30631` (router2) 35590 (42%), 17360 FF, 116 MULT18X18D, 80 DP16KD, 34.8 MHz; critical path now the host register read through the descriptor mux |
 | 2026-11-03 | Verilator 5.020 | requant_unit split into 4 stages: `make clean && make ci` | 16 testbenches pass; requant latency checked at 4 cycles on every vector; MNIST cycles unchanged (18747) |
 | 2026-11-03 | Verilator 5.020 | Pipelined descriptor check: `make unit-npu_sequencer` (2000 descriptors, and 60000 each with seeds 11 and 12), `make clean && make ci` | PASS; a mutation of the error priority fails; MNIST 18747 cycles per image (+3 per layer), array busy 16288 |
 
@@ -143,8 +149,9 @@ M6 in progress: `chip_top` (reset synchronizers, clock gate, APB bridge, pixel s
 1. CIFAR-10: run `python3 model/train_lenet.py --net cifar10` and `python3 model/quantize.py --net cifar10` on a
    machine that can download the Toronto archive, commit `model/data/cifar10/`, add `cifar10` to `NETS` in the
    Makefile. No RTL change is expected: conv1 has C_in 3 and pad 0, everything else is identical.
-2. Synthesis: reduce the combinational area until the default configuration fits the ECP5-85k, then record the
-   xc7 and ECP5 numbers and the post-route Fmax in `docs/synthesis.md` and the README.
+2. Timing: register the host read path of `npu_regs` (descriptor words acknowledged a cycle later) or move the
+   descriptor table into a block RAM behind the existing read port; then look at the requant multiplier and the
+   `conv_engine` input address sum, the expected next critical paths (`docs/synthesis.md`).
 3. Run the unit and integration testbenches with VCS and record the results in the table below.
 
 ## Known limitations

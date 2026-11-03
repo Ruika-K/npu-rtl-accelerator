@@ -52,14 +52,17 @@ make compile && make run
 
 | Document | Contents |
 | --- | --- |
+| [docs/architecture.md](docs/architecture.md) | Scope, numeric formats, tensor layout, dataflow, module partition, interfaces, throughput estimate |
+| [docs/programming_model.md](docs/programming_model.md) | Address map, registers, descriptor format, run sequence, error codes, LeNet-5 example |
+| [docs/verification.md](docs/verification.md) | Golden model, testbench levels, assertions, tools, definition of done per milestone |
+| [docs/decisions.md](docs/decisions.md) | Why each key decision was made and what was rejected |
 | [docs/STATUS.md](docs/STATUS.md) | Current milestone, verification evidence, next steps |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Engineering conventions |
 
 ## Roadmap
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
-| M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches, Verilator CI | |
+| M1 | `npu_pkg`, `requant_unit`, `pe`, Python requant model, unit testbenches, Verilator CI | Next |
 | M2 | `systolic_array` GEMM checked against numpy | |
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | |
 | M4 | `act_buffer`, `weight_buffer`, `conv_addr_gen`, `conv_engine`, `pool_engine`, `argmax_engine`; single layers bit-exact | |

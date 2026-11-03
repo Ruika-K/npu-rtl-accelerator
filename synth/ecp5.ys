@@ -1,0 +1,6 @@
+# Lattice ECP5 synthesis of npu_top, followed by nextpnr-ecp5 for a real
+# post-place-and-route Fmax (make synth-ecp5).
+read_verilog -sv build/synth/npu_top.v
+hierarchy -check -top npu_top
+synth_ecp5 -top npu_top -json build/synth/npu_top_ecp5.json
+tee -o build/synth/ecp5_stat.txt stat

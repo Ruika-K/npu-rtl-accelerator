@@ -8,6 +8,7 @@
 #   make integ       Layer cases and the LeNet-5 networks through AXI4-Lite with Verilator
 #   make integ-mnist One network (integ-<net>, IMAGES=<n> to limit the images)
 #   make ci          lint + model-test + unit + integ (what GitHub Actions runs)
+#   make synth       sv2v + Yosys (xc7 resources) and nextpnr-ecp5 (Fmax), see synth/README.md
 #
 #   make compile / make run      VCS flow for TOP and FILELIST (commercial simulator)
 #   make vcs-unit-<module>       VCS build and run of one unit testbench
@@ -51,7 +52,7 @@ VCS_FLAGS ?= -full64 -sverilog -timescale=1ns/1ps -debug_access+all
 
 # lint-%, unit-% and vcs-unit-% are pattern rules; GNU make skips pattern
 # search for .PHONY targets, so they are deliberately not listed here.
-.PHONY: help lint model-test vectors unit integ integ-layers ci compile run clean
+.PHONY: help lint model-test vectors unit integ integ-layers ci synth synth-xilinx synth-ecp5 compile run clean
 
 help:
 	@sed -n '2,16p' Makefile | sed 's/^# \{0,1\}//'
@@ -130,6 +131,31 @@ vcs-integ-%:
 	$(BUILD_DIR)/vcs/npu_lenet_tb/simv +program=$(abspath model/data/$*/program.txt) +images=$(IMAGES)
 
 ci: lint model-test unit integ
+
+# ---------------------------------------------------------------------------
+# Synthesis (open source: sv2v + yosys, nextpnr-ecp5 for timing), see synth/README.md
+# ---------------------------------------------------------------------------
+SV2V         ?= sv2v
+YOSYS        ?= yosys
+NEXTPNR_ECP5 ?= nextpnr-ecp5
+SYNTH_DIR    := $(BUILD_DIR)/synth
+RTL_SRCS     := $(shell grep -v '^\#' $(RTL_F))
+
+$(SYNTH_DIR)/npu_top.v: $(RTL_SRCS)
+	mkdir -p $(SYNTH_DIR)
+	$(SV2V) --top npu_top $(RTL_SRCS) > $@
+
+synth-xilinx: $(SYNTH_DIR)/npu_top.v
+	$(YOSYS) -q -l $(SYNTH_DIR)/xilinx.log -s synth/xilinx.ys
+	@grep -A40 "=== npu_top ===" $(SYNTH_DIR)/xilinx_stat.txt | head -60
+
+synth-ecp5: $(SYNTH_DIR)/npu_top.v
+	$(YOSYS) -q -l $(SYNTH_DIR)/ecp5.log -s synth/ecp5.ys
+	$(NEXTPNR_ECP5) --85k --package CABGA381 --speed 8 --json $(SYNTH_DIR)/npu_top_ecp5.json \
+	    --freq 100 --timing-allow-fail --seed 1 --log $(SYNTH_DIR)/nextpnr.log > /dev/null
+	@grep -E "Max frequency|Device utilisation|TRELLIS_SLICE|DP16KD|MULT18X18D" $(SYNTH_DIR)/nextpnr.log | tail -12
+
+synth: synth-xilinx synth-ecp5
 
 # ---------------------------------------------------------------------------
 # VCS (commercial simulator, optional)

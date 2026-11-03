@@ -1,0 +1,52 @@
+name: Synthesis
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  yosys:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Yosys and nextpnr
+        run: sudo apt-get update && sudo apt-get install --yes yosys nextpnr-ecp5
+
+      - name: Install sv2v
+        run: |
+          curl -sSL -o sv2v.zip https://github.com/zachjs/sv2v/releases/latest/download/sv2v-Linux.zip
+          unzip -q sv2v.zip
+          sudo install -m 755 sv2v-Linux/sv2v /usr/local/bin/sv2v
+          sv2v --version && yosys -V && nextpnr-ecp5 --version
+
+      - name: Xilinx 7-series resources
+        run: make synth-xilinx
+
+      - name: ECP5 place and route timing
+        run: make synth-ecp5
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Xilinx xc7 (yosys synth_xilinx, not flattened)"
+            echo '```'
+            awk '/=== npu_top ===/{f=1} f' build/synth/xilinx_stat.txt | head -70
+            echo '```'
+            echo "## ECP5-85k (nextpnr-ecp5, --freq 100)"
+            echo '```'
+            grep -E "Max frequency|Device utilisation|TRELLIS_SLICE|DP16KD|MULT18X18D|TRELLIS_FF|LUT4" build/synth/nextpnr.log | tail -20
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthesis-reports
+          path: |
+            build/synth/*.txt
+            build/synth/*.log
+          if-no-files-found: ignore

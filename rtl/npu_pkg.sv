@@ -30,7 +30,7 @@ package npu_pkg;
   localparam int unsigned PROD_W     = 16;  // int8 x int8 product
   localparam int unsigned ACC_W      = 32;  // int32 accumulator, bias, requant multiplier
   localparam int unsigned RQ_SHIFT_W = 6;   // requant shift, documented range 1..62
-  localparam int unsigned RQ_PIPE_LAT = 3;  // requant_unit fixed pipeline latency
+  localparam int unsigned RQ_PIPE_LAT = 4;  // requant_unit fixed pipeline latency
 
   // ---------------------------------------------------------------------------
   // Host address map, 20-bit internal address (programming_model.md section 1)

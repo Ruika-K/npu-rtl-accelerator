@@ -135,6 +135,7 @@ M6 in progress: `chip_top` (reset synchronizers, clock gate, APB bridge, pixel s
 | 2026-11-03 | Verilator 5.020 | Shared descriptor check: `make unit-npu_sequencer DESC_N=60000` with seeds 11 and 12 | PASS, 120000 random descriptors agree with the Python model; a mutation fails the testbench |
 | 2026-11-03 | Verilator 5.020 | Descriptor fetch: `make unit-npu_sequencer`, `make unit-npu_regs` | PASS: 20650 fetched words with 6917 grant stalls; the table walked twice through the read port under host reads; mutations of the grant priority and of the word order fail |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the descriptor fetch | 16 testbenches pass; MNIST 18723 cycles per image (+11 per layer for the descriptor fetch), array busy 16288 |
+| 2026-11-03 | Verilator 5.020 | requant_unit split into 4 stages: `make clean && make ci` | 16 testbenches pass; requant latency checked at 4 cycles on every vector; MNIST cycles unchanged (18747) |
 | 2026-11-03 | Verilator 5.020 | Pipelined descriptor check: `make unit-npu_sequencer` (2000 descriptors, and 60000 each with seeds 11 and 12), `make clean && make ci` | PASS; a mutation of the error priority fails; MNIST 18747 cycles per image (+3 per layer), array busy 16288 |
 
 ## Next steps

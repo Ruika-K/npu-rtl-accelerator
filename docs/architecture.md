@@ -384,9 +384,11 @@ restarts the drain and corrupts the previous tile; that is a producer bug, not a
 ### 7.8 requant_unit
 
 Inputs `acc_i[31:0]`, `bias_i[31:0]`, `mult_i[31:0]`, `shift_i[5:0]`, `z_out_i[7:0]`, `act_min_i[7:0]`,
-`act_max_i[7:0]`, `valid_i`; outputs `q_o[7:0]`, `valid_o`. Fixed 3-stage pipeline (`RQ_PIPE_LAT`) split along
-the formula in section 3.3: S1 does the 33-bit bias add, S2 the 33 x 32 signed multiply, S3 the rounding shift,
-zero-point add and clamp. `valid_o` is exactly `valid_i` delayed by 3 cycles; data registers only toggle when valid.
+`act_max_i[7:0]`, `valid_i`; outputs `q_o[7:0]`, `valid_o`. Fixed 4-stage pipeline (`RQ_PIPE_LAT`) split along
+the formula in section 3.3: S1 does the 33-bit bias add, S2 the 33 x 32 signed multiply, S3 the shift by shift-1
+with saturation to 14 bits, S4 the final rounding step, zero-point add and clamp (exactly equal to the formula;
+the argument is in the module header). `valid_o` is exactly `valid_i` delayed by 4 cycles; data registers only
+toggle when valid. Until M6 S3 and S4 were one stage; the routed ECP5 build showed it as the critical path.
 
 ### 7.9 pe
 

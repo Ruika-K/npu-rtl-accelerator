@@ -8,6 +8,7 @@ jobs:
   xilinx:
     name: xc7 resources (yosys)
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -39,6 +40,7 @@ jobs:
   ecp5:
     name: ECP5 place and route (nextpnr)
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

@@ -171,7 +171,7 @@ $(SYNTH_DIR)/npu_top_ooc.v: $(RTL_SRCS) synth/npu_top_ooc.sv
 synth-ecp5: $(SYNTH_DIR)/npu_top_ooc.v
 	$(YOSYS) -q -l $(SYNTH_DIR)/ecp5.log -s synth/ecp5.ys
 	$(NEXTPNR_ECP5) --85k --package CABGA381 --speed 8 --json $(SYNTH_DIR)/npu_top_ooc_ecp5.json \
-	    --freq 100 --timing-allow-fail --seed 1 --log $(SYNTH_DIR)/nextpnr.log > /dev/null 2>&1 \
+	    --freq 100 --timing-allow-fail --seed 1 --router router2 --log $(SYNTH_DIR)/nextpnr.log > /dev/null 2>&1 \
 	    || { python3 synth/nextpnr_summary.py $(SYNTH_DIR)/nextpnr.log; exit 1; }
 	@python3 synth/nextpnr_summary.py $(SYNTH_DIR)/nextpnr.log
 

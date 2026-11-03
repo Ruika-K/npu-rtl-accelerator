@@ -22,9 +22,10 @@ SEED      ?= 1
 
 # Units: RTL module names that have tb/unit/<module>_tb.sv and
 # sim/filelists/unit_<module>.f
-UNITS     ?= requant_unit pe systolic_array axil_slave npu_regs npu_sequencer act_buffer conv_engine
+UNITS     ?= requant_unit pe systolic_array axil_slave npu_regs npu_sequencer act_buffer conv_engine \
+             pool_engine argmax_engine
 LINT_TOPS ?= npu_top requant_unit pe systolic_array axil_slave npu_regs npu_sequencer \
-             sram_1r1w act_buffer weight_buffer host_mem_adapter conv_engine
+             sram_1r1w act_buffer weight_buffer host_mem_adapter conv_engine pool_engine argmax_engine
 
 RTL_F     ?= sim/filelists/rtl.f
 TOP       ?= npu_top_tb

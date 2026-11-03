@@ -15,7 +15,8 @@ reproduce with open-source tools.
 - **8x8 output-stationary systolic array.** Partial sums stay in the PEs; activations are read as unaligned
   8-byte vectors from a byte-banked SRAM with zero bank conflicts.
 - **On-chip memory and a standard host port.** 32 KB activation buffer, 128 KB weight buffer, AXI4-Lite slave
-  for configuration and loading.
+  for configuration and loading. A chip-level wrapper adds an APB bridge, a pixel stream crossing clock domains
+  through a Gray-pointer FIFO, reset synchronizers and a core clock gate.
 - **Reproducible verification.** Pure-integer Python reference, self-checking SystemVerilog testbenches,
   Verilator lint and simulation in GitHub Actions, and a whole LeNet-5 that matches the model bit for bit.
 
@@ -29,14 +30,16 @@ reproduce with open-source tools.
 │   ├── compute/             # requant_unit, pe, systolic_array, conv_engine, pool_engine, argmax_engine
 │   ├── host/                # axil_slave, npu_regs, host_mem_adapter
 │   ├── ctrl/                # npu_sequencer
-│   └── mem/                 # sram_1r1w, act_buffer, weight_buffer
+│   ├── mem/                 # sram_1r1w, act_buffer, weight_buffer
+│   └── chip/                # chip_top: reset sync, clock gate, APB bridge, async FIFO, pixel writer
 ├── tb/
 │   ├── common/              # SV reference functions, AXI4-Lite master BFM
 │   ├── unit/                # One self-checking testbench per module
-│   └── integration/         # npu_top through AXI4-Lite
+│   └── integration/         # npu_top through AXI4-Lite, LeNet-5 networks, chip_top with two clocks
 ├── model/                   # Python integer golden model, vector generators, self-test
 ├── sim/filelists/           # Filelists shared by Verilator and VCS
-├── docs/                    # Architecture, programming model, verification plan, decisions, status
+├── docs/                    # Architecture, programming model, verification plan, decisions, synthesis, status
+├── synth/                   # Yosys scripts (sv2v + synth_xilinx / synth_ecp5 + nextpnr)
 ├── .github/workflows/       # CI
 ├── CONTRIBUTING.md          # Engineering conventions
 └── Makefile                 # lint / unit / smoke / ci targets
@@ -97,6 +100,7 @@ the int8 program 97.9% on the same 2000 test images (`model/data/mnist/net.json`
 | [docs/programming_model.md](docs/programming_model.md) | Address map, registers, descriptor format, run sequence, error codes, LeNet-5 example |
 | [docs/verification.md](docs/verification.md) | Golden model, testbench levels, assertions, tools, definition of done per milestone |
 | [docs/decisions.md](docs/decisions.md) | Why each key decision was made and what was rejected |
+| [docs/synthesis.md](docs/synthesis.md) | FPGA resource and timing estimates from the open-source flow |
 | [docs/STATUS.md](docs/STATUS.md) | Current milestone, verification evidence, next steps |
 
 ## Roadmap
@@ -108,7 +112,7 @@ the int8 program 97.9% on the same 2000 test images (`model/data/mnist/net.json`
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact through AXI4-Lite | Done |
 | M5 | LeNet-5 end to end: numpy training, quantization and export, MNIST bit-exact on 100 images, performance table | MNIST done, CIFAR-10 pending its dataset |
-| M6 | Optional: AXI4 master DMA, `chip_top` (CDC, configuration bridge, clock gating), FPGA synthesis numbers | Next |
+| M6 | Open-source synthesis flow and numbers, `chip_top` (CDC, APB bridge, clock gating), AXI4 master DMA | Synthesis and chip_top done; DMA next |
 
 ## Originality
 

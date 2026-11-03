@@ -34,6 +34,7 @@ module npu_lenet_tb
       .s_axil_bresp_o (bresp), .s_axil_bvalid_o (bvalid), .s_axil_bready_i (bready),
       .s_axil_araddr_i (araddr), .s_axil_arprot_i (3'b000), .s_axil_arvalid_i (arvalid), .s_axil_arready_o (arready),
       .s_axil_rdata_o (rdata), .s_axil_rresp_o (rresp), .s_axil_rvalid_o (rvalid), .s_axil_rready_i (rready),
+      .pix_wr_en_i (1'b0), .pix_wr_addr_i ('0), .pix_wr_data_i ('0), .pix_wr_be_i ('0), .pix_wr_ready_o (),
       .irq_o (irq_o)
   );
 

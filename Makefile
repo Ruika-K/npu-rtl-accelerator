@@ -5,7 +5,7 @@
 #   make vectors     Generate Python golden vectors used by the unit testbenches
 #   make unit        Build and run every unit testbench with Verilator
 #   make unit-pe     One unit testbench (unit-<module>)
-#   make integ       Layer cases and the LeNet-5 networks through AXI4-Lite with Verilator
+#   make integ       Layer cases, the LeNet-5 networks (AXI4-Lite) and chip_top (APB + pixel stream)
 #   make integ-mnist One network (integ-<net>, IMAGES=<n> to limit the images)
 #   make ci          lint + model-test + unit + integ (what GitHub Actions runs)
 #   make synth       sv2v + Yosys (xc7 resources) and nextpnr-ecp5 (Fmax), see synth/README.md
@@ -25,11 +25,13 @@ SEED      ?= 1
 # Units: RTL module names that have tb/unit/<module>_tb.sv and
 # sim/filelists/unit_<module>.f
 UNITS     ?= requant_unit pe systolic_array axil_slave npu_regs npu_sequencer act_buffer conv_engine \
-             pool_engine argmax_engine
+             pool_engine argmax_engine async_fifo pix_writer
 LINT_TOPS ?= npu_top requant_unit pe systolic_array axil_slave npu_regs npu_sequencer \
-             sram_1r1w act_buffer weight_buffer host_mem_adapter conv_engine pool_engine argmax_engine
+             sram_1r1w act_buffer weight_buffer host_mem_adapter conv_engine pool_engine argmax_engine \
+             cdc_sync async_fifo rst_sync clk_gate apb2axil pix_writer chip_regs chip_top
 
-RTL_F     ?= sim/filelists/rtl.f
+RTL_F     ?= sim/filelists/rtl.f        # npu_top and below (synthesis, integration tests)
+LINT_F    ?= sim/filelists/rtl_chip.f   # everything, including the chip-level blocks
 TOP       ?= npu_top_tb
 FILELIST  ?= sim/filelists/tb.f
 
@@ -52,7 +54,7 @@ VCS_FLAGS ?= -full64 -sverilog -timescale=1ns/1ps -debug_access+all
 
 # lint-%, unit-% and vcs-unit-% are pattern rules; GNU make skips pattern
 # search for .PHONY targets, so they are deliberately not listed here.
-.PHONY: help lint model-test vectors unit integ integ-layers ci synth synth-xilinx synth-ecp5 compile run clean
+.PHONY: help lint model-test vectors unit integ integ-layers integ-chip ci synth synth-xilinx synth-ecp5 compile run clean
 
 help:
 	@sed -n '2,16p' Makefile | sed 's/^# \{0,1\}//'
@@ -63,7 +65,7 @@ help:
 lint: $(addprefix lint-,$(LINT_TOPS))
 
 lint-%:
-	$(VERILATOR) $(VERILATOR_LINT_FLAGS) -f $(RTL_F) --top-module $*
+	$(VERILATOR) $(VERILATOR_LINT_FLAGS) -f $(LINT_F) --top-module $*
 
 # ---------------------------------------------------------------------------
 # Python golden model
@@ -105,7 +107,16 @@ unit-%: vectors
 NETS      ?= mnist    # networks with committed model/data/<net>/program.txt
 IMAGES    ?= 100
 
-integ: integ-layers $(addprefix integ-,$(NETS))
+integ: integ-layers $(addprefix integ-,$(NETS)) integ-chip
+
+# chip_top: APB bridge, pixel stream across clock domains, clock gate, with the first MNIST images
+integ-chip:
+	mkdir -p $(BUILD_DIR)/verilator $(BUILD_DIR)/logs
+	$(VERILATOR) $(VERILATOR_SIM_FLAGS) -f sim/filelists/integ_chip_top.f --top-module chip_top_tb \
+	    --Mdir $(BUILD_DIR)/verilator/chip_top_tb -o chip_top_tb
+	$(BUILD_DIR)/verilator/chip_top_tb/chip_top_tb +program=$(abspath model/data/mnist/program.txt) +images=4 \
+	    | tee $(BUILD_DIR)/logs/chip_top_tb.log
+	@grep -q '^PASS' $(BUILD_DIR)/logs/chip_top_tb.log
 
 integ-layers: vectors
 	mkdir -p $(BUILD_DIR)/verilator $(BUILD_DIR)/logs

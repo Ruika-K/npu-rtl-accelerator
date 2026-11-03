@@ -31,6 +31,14 @@ module npu_top
   output logic        s_axil_rvalid_o,
   input  logic        s_axil_rready_i,
 
+  // Stream write port into the activation buffer (chip-level pixel writer).
+  // Granted only while no layer program runs and the host is not writing.
+  input  logic                    pix_wr_en_i,
+  input  logic [ABUF_AW-1:0]      pix_wr_addr_i,
+  input  logic [ARR_N-1:0][7:0]   pix_wr_data_i,
+  input  logic [ARR_N-1:0]        pix_wr_be_i,
+  output logic                    pix_wr_ready_o,
+
   output logic        irq_o
 );
 
@@ -178,10 +186,16 @@ module npu_top
       wbuf_rd_en = 1'b0;         wbuf_rd_addr = '0;
     end else begin
       abuf_rd_en = h_abuf_rd_en; abuf_rd_addr = h_abuf_rd_addr;
-      abuf_wr_en = h_abuf_wr_en; abuf_wr_addr = h_abuf_wr_addr; abuf_wr_data = h_abuf_wr_data; abuf_wr_be = h_abuf_wr_be;
       wbuf_rd_en = h_wbuf_rd_en; wbuf_rd_addr = h_wbuf_rd_addr;
+      if (h_abuf_wr_en || busy) begin
+        abuf_wr_en = h_abuf_wr_en; abuf_wr_addr = h_abuf_wr_addr; abuf_wr_data = h_abuf_wr_data; abuf_wr_be = h_abuf_wr_be;
+      end else begin
+        abuf_wr_en = pix_wr_en_i; abuf_wr_addr = pix_wr_addr_i; abuf_wr_data = pix_wr_data_i; abuf_wr_be = pix_wr_be_i;
+      end
     end
   end
+
+  assign pix_wr_ready_o = !busy && !conv_busy && !pool_busy && !argmax_busy && !h_abuf_wr_en;
 
   act_buffer #(.N(N)) u_abuf (
       .clk_i (clk_i), .rst_ni (rst_ni),

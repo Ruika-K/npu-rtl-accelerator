@@ -153,3 +153,26 @@ Descriptor table (LAYER_CNT = 8):
 The CIFAR-10 version differs in only two places: DESC[0] becomes IN 32 x 32, C_IN 3, PAD 0, and the conv1 weights
 become 75 x 8 bytes; every other descriptor has exactly the same shape and differs only in RQ_MULT / RQ_SHIFT / Z_*
 and in the weight contents. This is what "one RTL, two networks" means concretely.
+
+## 7. Chip-level registers (chip_top, APB)
+
+`chip_top` exposes the NPU map above through an APB port at `0x00000 .. 0xFFFFF` (address bit 20 clear) and the
+chip registers at `0x100000` (bit 20 set). APB transfers to the NPU window become one AXI4-Lite transaction each;
+PSLVERR mirrors SLVERR, and every access to the NPU window returns PSLVERR while the core clock is gated.
+
+| Offset | Name | Bits | Type | Reset | Description |
+| --- | --- | --- | --- | --- | --- |
+| `0x100000` | CHIP_ID | [31:0] | RO | `0x4E505543` | ASCII "NPUC" |
+| `0x100004` | CLK_CTRL | [0] CORE_CLK_EN | RW | 1 | Clock of the NPU core and the pixel writer. Gate only while idle |
+| `0x100008` | PIX_CTRL | [0] EN | RW | 0 | Pixel writer enable (the FIFO still accepts data while disabled) |
+| | | [1] IRQ_EN | RW | 0 | FRAME_DONE drives `irq_o` |
+| `0x10000C` | PIX_BASE | [14:0] | RW | 0 | act_buffer byte offset of the frame |
+| `0x100010` | PIX_LEN | [14:0] | RW | 0 | Bytes per frame |
+| `0x100014` | PIX_STATUS | [0] FRAME_DONE | W1C | 0 | A frame has been written completely |
+| | | [1] SOF_ERR | W1C | 0 | A byte arrived before any sof (dropped) or a sof arrived inside a frame (frame restarted) |
+| | | [2] OVERRUN | W1C | 0 | The source pushed while the FIFO was full |
+| `0x100018` | PIX_FRAMES | [31:0] | RO | 0 | Frames completed since reset |
+
+Frame flow: set PIX_BASE to the layer-0 input base and PIX_LEN to its size, enable, stream the frame with `sof` on
+its first byte, wait for FRAME_DONE (poll or interrupt), clear it, then START the NPU as in section 4.
+

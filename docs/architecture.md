@@ -291,6 +291,7 @@ Naming: inputs end in `_i`, outputs in `_o`, the active-low reset is `rst_ni`. M
 | `clk_i`, `rst_ni` | in | Single clock domain, asynchronous active-low reset (synchronized outside the top) |
 | `s_axil_aw*_i/o`, `s_axil_w*`, `s_axil_b*`, `s_axil_ar*`, `s_axil_r*` | - | AXI4-Lite slave, 32-bit ADDR (low 20 bits used internally), 32-bit DATA |
 | `irq_o` | out | Level interrupt, `STATUS.DONE & CTRL.IRQ_EN` |
+| `pix_wr_en_i`, `pix_wr_addr_i[14:0]`, `pix_wr_data_i[8][7:0]`, `pix_wr_be_i[7:0]`, `pix_wr_ready_o` | - | Stream write port into the activation buffer for the chip-level pixel writer; granted only while no program runs and the host is not writing |
 
 ### 7.2 Internal bus from axil_slave to npu_regs
 
@@ -424,3 +425,40 @@ product. The forwarding registers update unconditionally every cycle so that the
 | No DMA | v1 focuses on the compute core | M6 adds an AXI4 master that moves weights and images from external memory into the two buffers |
 | Single clock domain | Focus on the compute core | M6 `chip_top` adds a pixel-stream async FIFO, an APB or SPI configuration bridge and clock gating |
 | Weights re-read per m_tile | Inherent cost of output-stationary | On-chip SRAM bandwidth is sufficient here; with external memory, add a weight cache or move to weight-stationary |
+
+## 11. chip_top (M6)
+
+A thin SoC wrapper that shows the integration concerns the core deliberately leaves out (ADR-009). The compute
+core is unchanged; `npu_top` only gained the stream write port.
+
+```text
+ rst_ni ---> rst_sync (sys) ----> sys_rst_n                 rst_sync (pix) ---> pix_rst_n
+ sys_clk_i -> clk_gate(CORE_CLK_EN) -> core_clk
+ APB (sys_clk) --+--> apb2axil ----AXI4-Lite----> npu_top (core_clk)  <--- pix_writer (core_clk)
+                 +--> chip_regs (0x100000)                                   ^
+ pixel stream (pix_clk) ---> async_fifo (Gray pointers, 9 bits) -------------+
+```
+
+| Block | File | Role |
+| --- | --- | --- |
+| `rst_sync` | `rtl/chip/rst_sync.sv` | Asynchronous assert, synchronous release, one per clock domain |
+| `clk_gate` | `rtl/chip/clk_gate.sv` | Latch-based integrated clock gate on the core clock (`CLK_CTRL.CORE_CLK_EN`) |
+| `apb2axil` | `rtl/chip/apb2axil.sv` | APB slave to AXI4-Lite master, one transfer at a time; returns PSLVERR without a transaction while the core is gated |
+| `chip_regs` | `rtl/chip/chip_regs.sv` | Chip registers at APB `0x100000` (programming_model.md section 7) |
+| `cdc_sync`, `async_fifo` | `rtl/chip/` | Two-flop synchronizer; Gray-pointer FIFO carrying `{sof, byte}` from the pixel to the core clock |
+| `pix_writer` | `rtl/chip/pix_writer.sv` | Packs the stream into 8-byte writes at `PIX_BASE`, counts `PIX_LEN` bytes per frame, pulses frame done; flags a byte before the first sof and a sof inside a frame |
+| `chip_top` | `rtl/chip/chip_top.sv` | Wiring, APB decode (address bit 20 selects the chip registers), overrun detection (toggle synchronizer), interrupt OR |
+
+Rules the wrapper relies on:
+
+- One external reset. Each domain gets its own synchronized copy; the FIFO sees both.
+- The pixel writer and the FIFO read side run on the gated core clock, so gating the core also stops draining the
+  FIFO; the source is back-pressured through `pix_ready_o`. Software gates the core only while idle and does not
+  access the core window while gated (the bridge answers PSLVERR instead of hanging).
+- The stream port is granted only while no layer program runs and the host adapter is not writing, so a frame
+  streamed during an inference waits in the FIFO (16 entries) and completes afterwards. Double buffering (two
+  input regions, writes allowed during a run) is the natural extension.
+- An overrun is a push while the FIFO is full; it is recorded in the pixel domain as a toggle, synchronized and
+  edge-detected in the system domain, and latched in `PIX_STATUS`.
+- `irq_o` is the OR of the NPU done interrupt and the frame-done interrupt; software reads both status registers.
+

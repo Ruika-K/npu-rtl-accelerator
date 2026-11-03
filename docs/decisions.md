@@ -146,3 +146,19 @@ This is the most important architectural decision in v1.
   the author and for anyone reading the repository.
 - Rejected: a long-lived development branch merged in one go.
 - Cost: discipline in branch naming and PR descriptions.
+
+## ADR-014 chip_top: what the wrapper owns and what it does not
+
+- Choice: `chip_top` adds one reset synchronized per domain, an APB-to-AXI4-Lite bridge plus a small chip register
+  block, a pixel stream crossing domains through a Gray-pointer FIFO into a byte-packing writer, and a clock gate on
+  the core. The core keeps its AXI4-Lite port and gains only a stream write port that is granted while idle.
+- Why: these are the integration concerns a real chip has (ADR-009 deferred them) and they can each be shown with a
+  small, separately testable block. Keeping the pixel path outside the core avoids touching the engines or the
+  memories; the only arbitration added is "stream writes when nobody else writes".
+- Rejected: an SPI configuration slave (an APB port is the more common SoC boundary and the bridge is the
+  interesting part); letting frames stream into a second buffer during a run (double buffering is a small
+  extension once the single-buffer path is proven); gating only the compute engines (the monolithic `npu_top`
+  makes the register path part of the gated domain, so the bridge answers PSLVERR while gated instead of hanging).
+- Cost: a frame cannot be loaded while an inference runs, so capture and compute are serialized; the FIFO holds
+  only 16 bytes, so a source without flow control overruns quickly (recorded in PIX_STATUS).
+

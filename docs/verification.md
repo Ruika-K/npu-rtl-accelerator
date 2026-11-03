@@ -40,6 +40,9 @@ Rules:
 | `npu_regs` (behind `axil_slave`) | Testbench plays the sequencer, the argmax engine and both memories; directed register sequences plus random mixed traffic against a reference | Reset values, RW / RO / W1P / W1C, START side effects, irq, descriptor words with byte strobes and reserved masks, `desc_o` decoding, memory-window routing, SLVERR for unmapped / misaligned / busy accesses, HOST_CONFLICT |
 | `npu_sequencer` | Stub engines with random latency or injected errors, a LeNet-5 program, NOP layers, start while busy, one directed case per check, descriptors from `model/gen_desc_vectors.py` | Engine order and forwarded descriptors (FC view), done / busy / cur_layer timing, every error code with the failing layer, the three counters against a cycle-exact model, error codes equal to the Python model on 2000 random descriptors |
 | `pool_engine`, `argmax_engine` | Random tensors | Match numpy |
+| `async_fifo` | Two unrelated clocks swept over six ratios, random stalls on both sides, 24k words | Order and content against a queue model, no underflow, occupancy from the DUT pointers never above DEPTH |
+| `pix_writer` | Random frames at random bases with lengths that are not multiples of 8, random port stalls, a byte before sof, a sof inside a frame | Bytes land exactly in the frame region (guard bytes untouched), frame-done count, error pulses |
+| `chip_top` (`make integ-chip`) | Two clocks (100 MHz system, about 37 MHz pixel); APB loads the program through the bridge; frames arrive on the pixel stream; a frame streamed during a run; a rude source; the clock gate | Every prediction equals the integer model; FRAME_DONE and PIX_FRAMES; back-pressure through the FIFO; SOF_ERR and OVERRUN; PSLVERR on the core window while gated |
 
 ### 2.2 Integration level (`tb/integration/npu_top_tb.sv`, `make integ`)
 

@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M5: LeNet-5 runs end to end on MNIST, bit-exact with the integer model on all 100 committed test images. CIFAR-10 waits for its dataset (the Toronto archive is not reachable from the CI container; the same two scripts produce it on a machine that can download it). Next: M6 options.
+M6 in progress: the open-source synthesis flow runs in CI (numbers in `docs/synthesis.md`), and `chip_top` wraps the core with reset synchronizers, a clock gate, an APB bridge and a pixel stream crossing clock domains, verified with two clocks. CIFAR-10 still waits for its dataset. Next: AXI4 master DMA.
 
 ## Completed
 
@@ -65,6 +65,15 @@ M5: LeNet-5 runs end to end on MNIST, bit-exact with the integer model on all 10
     run, compare the class with the model; layer traces byte for byte; perf counters printed.
   - README performance table from the counters: 18635 cycles per image, 35% of peak.
 
+- M6 (2026-11-03), first two items:
+  - Synthesis: `synth/` scripts and `.github/workflows/synth.yml` (sv2v + Yosys `synth_xilinx` for resources,
+    Yosys `synth_ecp5` + nextpnr-ecp5 for a post-route Fmax), results in `docs/synthesis.md`.
+  - `rtl/chip/`: `rst_sync`, `clk_gate`, `cdc_sync`, `async_fifo` (Gray pointers), `apb2axil`, `pix_writer`,
+    `chip_regs`, `chip_top`; `npu_top` gained a stream write port granted while idle.
+  - Testbenches: `tb/unit/async_fifo_tb.sv` (six clock ratios, 24k words), `tb/unit/pix_writer_tb.sv` (208 frames),
+    `tb/integration/chip_top_tb.sv` (`make integ-chip`: APB loads the program, frames on the pixel clock, a frame
+    during a run, rude source, clock gate; 5 MNIST images agree with the model).
+
 ## Milestone plan
 
 | Milestone | Scope | Status |
@@ -74,7 +83,7 @@ M5: LeNet-5 runs end to end on MNIST, bit-exact with the integer model on all 10
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | MNIST done; CIFAR-10 pending dataset |
-| M6 | Optional: AXI4 master DMA, `chip_top` (CDC / configuration bridge / clock gating), FPGA synthesis data | Not started |
+| M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | Synthesis and chip_top done, DMA not started |
 
 ## Verification evidence
 
@@ -109,6 +118,9 @@ M5: LeNet-5 runs end to end on MNIST, bit-exact with the integer model on all 10
 | 2026-11-03 | numpy 2.5 | `python3 model/train_lenet.py --net mnist` | float32 test accuracy 98.68% after 4 epochs |
 | 2026-11-03 | Python 3.13 | `python3 model/quantize.py --net mnist --report 2000` | int8 program 97.9% on 2000 images, float32 97.9% on the same images |
 | 2026-11-03 | Verilator 5.020 | `make integ-mnist` (100 images) | PASS: 100 of 100 predictions equal the integer model, 99 match the label, 14 layer traces byte-exact, 18635 cycles per image |
+| 2026-11-03 | Verilator 5.020 | `make unit-async_fifo`, `make unit-pix_writer` (seeds 1 and 7) | PASS: 24005 words over six clock ratios; 208 frames incl. sof errors |
+| 2026-11-03 | Verilator 5.020 | `make integ-chip` | PASS: 5 images through APB and the pixel stream agree with the model; back-pressure, clock gate, SOF_ERR, OVERRUN checked |
+| 2026-11-03 | Verilator 5.020 | `make clean && make ci` after chip_top | 16 testbenches pass, 106 s |
 
 ## Next steps
 

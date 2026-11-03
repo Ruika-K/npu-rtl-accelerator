@@ -28,7 +28,7 @@ UNITS     ?= requant_unit pe systolic_array axil_slave npu_regs npu_sequencer ac
              pool_engine argmax_engine async_fifo pix_writer
 LINT_TOPS ?= npu_top requant_unit pe systolic_array axil_slave npu_regs npu_sequencer \
              sram_1r1w act_buffer weight_buffer host_mem_adapter conv_engine pool_engine argmax_engine \
-             cdc_sync async_fifo rst_sync clk_gate apb2axil pix_writer chip_regs chip_top
+             npu_dma cdc_sync async_fifo rst_sync clk_gate apb2axil pix_writer chip_regs chip_top
 
 RTL_F     ?= sim/filelists/rtl.f        # npu_top and below (synthesis, integration tests)
 LINT_F    ?= sim/filelists/rtl_chip.f   # everything, including the chip-level blocks

@@ -162,3 +162,15 @@ This is the most important architectural decision in v1.
 - Cost: a frame cannot be loaded while an inference runs, so capture and compute are serialized; the FIFO holds
   only 16 bytes, so a source without flow control overruns quickly (recorded in PIX_STATUS).
 
+## ADR-015 DMA as a simple register-driven mover inside the core
+
+- Choice: one AXI4 master in `npu_top`, programmed through five registers, one transfer at a time, granted the
+  buffer ports like an engine, mutually exclusive with running a program.
+- Why: it removes the AXI4-Lite word-by-word loading from the critical path of the host without adding a second
+  bus master outside the core, and the mutual exclusion keeps the port arbitration a priority list. A load is one
+  beat per cycle; the store path is simple and slow because results are small.
+- Rejected: descriptor-chained DMA with its own queue (more to verify, little gain for one network at a time);
+  letting the DMA run concurrently with a program (needs a second write port or per-cycle arbitration in the
+  engines); a wider or multi-ID bus.
+- Cost: capture, load and compute are serialized; large models would want the DMA overlapped with compute.
+

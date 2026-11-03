@@ -35,6 +35,11 @@ module npu_lenet_tb
       .s_axil_araddr_i (araddr), .s_axil_arprot_i (3'b000), .s_axil_arvalid_i (arvalid), .s_axil_arready_o (arready),
       .s_axil_rdata_o (rdata), .s_axil_rresp_o (rresp), .s_axil_rvalid_o (rvalid), .s_axil_rready_i (rready),
       .pix_wr_en_i (1'b0), .pix_wr_addr_i ('0), .pix_wr_data_i ('0), .pix_wr_be_i ('0), .pix_wr_ready_o (),
+      .m_axi_awaddr_o (), .m_axi_awlen_o (), .m_axi_awsize_o (), .m_axi_awburst_o (), .m_axi_awvalid_o (), .m_axi_awready_i (1'b0),
+      .m_axi_wdata_o (), .m_axi_wstrb_o (), .m_axi_wlast_o (), .m_axi_wvalid_o (), .m_axi_wready_i (1'b0),
+      .m_axi_bresp_i (2'b00), .m_axi_bvalid_i (1'b0), .m_axi_bready_o (),
+      .m_axi_araddr_o (), .m_axi_arlen_o (), .m_axi_arsize_o (), .m_axi_arburst_o (), .m_axi_arvalid_o (), .m_axi_arready_i (1'b0),
+      .m_axi_rdata_i ('0), .m_axi_rresp_i (2'b00), .m_axi_rlast_i (1'b0), .m_axi_rvalid_i (1'b0), .m_axi_rready_o (),
       .irq_o (irq_o)
   );
 

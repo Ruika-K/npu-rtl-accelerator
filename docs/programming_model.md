@@ -154,7 +154,30 @@ The CIFAR-10 version differs in only two places: DESC[0] becomes IN 32 x 32, C_I
 become 75 x 8 bytes; every other descriptor has exactly the same shape and differs only in RQ_MULT / RQ_SHIFT / Z_*
 and in the weight contents. This is what "one RTL, two networks" means concretely.
 
-## 7. Chip-level registers (chip_top, APB)
+## 7. DMA registers
+
+The DMA (AXI4 master, 64-bit data) moves data between external memory and the on-chip buffers while the NPU is
+idle. Addresses and the length are 8-byte aligned; a transfer is split into INCR bursts of up to 16 beats that
+never cross a 4 KB boundary. While a DMA runs, host accesses to the memory windows are rejected (SLVERR,
+HOST_CONFLICT) and CTRL.START is ignored; DMA_CTRL.START is ignored while the NPU is busy.
+
+| Offset | Name | Bits | Type | Reset | Description |
+| --- | --- | --- | --- | --- | --- |
+| `0x0C0` | DMA_CTRL | [0] START | W1P | 0 | Start one transfer; also clears DMA DONE / ERR / ERR_CODE |
+| | | [1] DIR | RW | 0 | 0 load (external -> buffer), 1 store (buffer -> external) |
+| | | [2] DST_SEL | RW | 0 | Buffer: 0 act_buffer, 1 weight_buffer |
+| `0x0C4` | DMA_SRC | [31:0] | RW | 0 | External byte address, 8-byte aligned |
+| `0x0C8` | DMA_DST | [19:0] | RW | 0 | Byte offset inside the selected buffer, 8-byte aligned |
+| `0x0CC` | DMA_LEN | [19:0] | RW | 0 | Bytes, a non-zero multiple of 8 |
+| `0x0D0` | DMA_STATUS | [0] BUSY | RO | 0 | Transfer in progress |
+| | | [1] DONE | W1C | 0 | Transfer finished |
+| | | [2] ERR | W1C | 0 | Transfer stopped on an error |
+| | | [15:8] ERR_CODE | RO | 0 | `0x02` misaligned or out-of-range parameters, `0x03` AXI SLVERR / DECERR |
+
+Typical use: DMA the weight blob into weight_buffer once, DMA each image into act_buffer at the layer-0 input
+base, START, and DMA the output region back out if the host wants more than the ARGMAX result.
+
+## 8. Chip-level registers (chip_top, APB)
 
 `chip_top` exposes the NPU map above through an APB port at `0x00000 .. 0xFFFFF` (address bit 20 clear) and the
 chip registers at `0x100000` (bit 20 set). APB transfers to the NPU window become one AXI4-Lite transaction each;

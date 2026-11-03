@@ -57,6 +57,18 @@ module npu_regs
   input  logic [31:0]                   total_cycles_i,
   input  logic [31:0]                   array_busy_cycles_i,
 
+  // DMA
+  output logic                          dma_start_o,
+  output logic                          dma_dir_o,
+  output logic                          dma_dst_sel_o,
+  output logic [31:0]                   dma_src_o,
+  output logic [19:0]                   dma_dst_o,
+  output logic [19:0]                   dma_len_o,
+  input  logic                          dma_busy_i,
+  input  logic                          dma_done_i,
+  input  logic                          dma_err_i,
+  input  err_e                          dma_err_code_i,
+
   // argmax result
   input  logic                          argmax_valid_i,
   input  logic [3:0]                    argmax_idx_i,
@@ -92,6 +104,10 @@ module npu_regs
 
   logic        hm_wait_q;   // a memory access is outstanding
   logic        hm_is_rd_q;
+  logic        dma_done_q, dma_err_q;
+  err_e        dma_err_code_q;
+  logic        mem_blocked_c;   // on-chip memory not available to the host
+  assign mem_blocked_c = busy_i || dma_busy_i;
 
   assign layer_cnt_o = layer_cnt_q;
   assign irq_o       = done_q & irq_en_q;
@@ -129,6 +145,11 @@ module npu_regs
       REG_RESULT:          return {23'h0, result_valid_q, 4'h0, result_idx_q};
       REG_PERF_TOTAL:      return total_cycles_i;
       REG_PERF_ARRAY_BUSY: return array_busy_cycles_i;
+      REG_DMA_CTRL:        return {29'h0, dma_dst_sel_o, dma_dir_o, 1'b0};
+      REG_DMA_SRC:         return dma_src_o;
+      REG_DMA_DST:         return {12'h0, dma_dst_o};
+      REG_DMA_LEN:         return {12'h0, dma_len_o};
+      REG_DMA_STATUS:      return {16'h0, dma_err_code_q, 5'h0, dma_err_q, dma_done_q, dma_busy_i};
       default:             return 32'h0;
     endcase
   endfunction
@@ -159,7 +180,10 @@ module npu_regs
   assign desc_idx_c  = desc_woff_c[7:4];
   assign desc_word_c = desc_woff_c[3:0];
   assign start_c     = wr_req_i && (wr_tgt_c == TGT_REG) && (wr_off_c == REG_CTRL) &&
-                       wr_strb_i[0] && wr_data_i[0] && !busy_i;
+                       wr_strb_i[0] && wr_data_i[0] && !busy_i && !dma_busy_i;
+  logic dma_start_c;
+  assign dma_start_c = wr_req_i && (wr_tgt_c == TGT_REG) && (wr_off_c == REG_DMA_CTRL) &&
+                       wr_strb_i[0] && wr_data_i[0] && !busy_i && !dma_busy_i;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
@@ -187,6 +211,15 @@ module npu_regs
       result_idx_q    <= '0;
       logits_q        <= '0;
       desc_words_q    <= '0;
+      dma_start_o     <= 1'b0;
+      dma_dir_o       <= 1'b0;
+      dma_dst_sel_o   <= 1'b0;
+      dma_src_o       <= '0;
+      dma_dst_o       <= '0;
+      dma_len_o       <= '0;
+      dma_done_q      <= 1'b0;
+      dma_err_q       <= 1'b0;
+      dma_err_code_q  <= ERR_NONE;
     end else begin
       // defaults for the pulses
       wr_ack_o <= 1'b0;
@@ -195,8 +228,14 @@ module npu_regs
       rd_err_o <= 1'b0;
       hm_req_o <= 1'b0;
       start_o  <= 1'b0;
+      dma_start_o <= 1'b0;
 
-      // ---- sequencer and argmax status, highest priority ----
+      // ---- sequencer, DMA and argmax status, highest priority ----
+      if (dma_done_i) dma_done_q <= 1'b1;
+      if (dma_err_i) begin
+        dma_err_q      <= 1'b1;
+        dma_err_code_q <= dma_err_code_i;
+      end
       if (done_i) done_q <= 1'b1;
       if (err_i) begin
         err_q      <= 1'b1;
@@ -234,6 +273,27 @@ module npu_regs
               end
             end else if (wr_off_c == REG_LAYER_CNT) begin
               if (wr_strb_i[0]) layer_cnt_q <= wr_data_i[4:0];
+            end else if (wr_off_c == REG_DMA_CTRL) begin
+              if (wr_strb_i[0]) begin
+                dma_dir_o     <= wr_data_i[1];
+                dma_dst_sel_o <= wr_data_i[2];
+                if (dma_start_c) begin
+                  dma_start_o <= 1'b1;
+                  if (!dma_done_i) dma_done_q <= 1'b0;
+                  if (!dma_err_i) begin dma_err_q <= 1'b0; dma_err_code_q <= ERR_NONE; end
+                end
+              end
+            end else if (wr_off_c == REG_DMA_SRC) begin
+              dma_src_o <= merge(dma_src_o, wr_data_i, wr_strb_i);
+            end else if (wr_off_c == REG_DMA_DST) begin
+              dma_dst_o <= 20'(merge({12'h0, dma_dst_o}, wr_data_i, wr_strb_i));
+            end else if (wr_off_c == REG_DMA_LEN) begin
+              dma_len_o <= 20'(merge({12'h0, dma_len_o}, wr_data_i, wr_strb_i));
+            end else if (wr_off_c == REG_DMA_STATUS) begin
+              if (wr_strb_i[0]) begin
+                if (wr_data_i[1] && !dma_done_i) dma_done_q <= 1'b0;
+                if (wr_data_i[2] && !dma_err_i)  dma_err_q  <= 1'b0;
+              end
             end else if (wr_off_c >= REG_DESC_BASE && wr_off_c < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4)) begin
               if (desc_word_c < 4'(DESC_USED_WORDS)) begin
                 desc_words_q[desc_idx_c][desc_word_c] <=
@@ -243,7 +303,7 @@ module npu_regs
             // other offsets: read-only or undefined, write ignored
           end
           TGT_ABUF, TGT_WBUF: begin
-            if (busy_i) begin
+            if (mem_blocked_c) begin
               wr_ack_o        <= 1'b1;
               wr_err_o        <= 1'b1;
               host_conflict_q <= 1'b1;
@@ -273,7 +333,7 @@ module npu_regs
             rd_data_o <= reg_read(rd_addr_i[11:0]);
           end
           TGT_ABUF, TGT_WBUF: begin
-            if (busy_i) begin
+            if (mem_blocked_c) begin
               rd_ack_o        <= 1'b1;
               rd_err_o        <= 1'b1;
               rd_data_o       <= '0;

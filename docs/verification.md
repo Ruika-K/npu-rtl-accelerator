@@ -42,6 +42,7 @@ Rules:
 | `pool_engine`, `argmax_engine` | Random tensors | Match numpy |
 | `async_fifo` | Two unrelated clocks swept over six ratios, random stalls on both sides, 24k words | Order and content against a queue model, no underflow, occupancy from the DUT pointers never above DEPTH |
 | `pix_writer` | Random frames at random bases with lengths that are not multiples of 8, random port stalls, a byte before sof, a sof inside a frame | Bytes land exactly in the frame region (guard bytes untouched), frame-done count, error pulses |
+| `npu_dma` (inside `make integ-layers`) | The biggest layer case replayed with DMA loads of image, weights and biases from `axi4_slave_mem`, the layer run, the output stored back by DMA; a host access and a START during a DMA; misaligned length, out-of-range destination, SLVERR on read and on write | Stored output equals the model; HOST_CONFLICT and ignored START; error codes 2 and 3; the memory model sees no protocol violation |
 | `chip_top` (`make integ-chip`) | Two clocks (100 MHz system, about 37 MHz pixel); APB loads the program through the bridge; frames arrive on the pixel stream; a frame streamed during a run; a rude source; the clock gate | Every prediction equals the integer model; FRAME_DONE and PIX_FRAMES; back-pressure through the FIFO; SOF_ERR and OVERRUN; PSLVERR on the core window while gated |
 
 ### 2.2 Integration level (`tb/integration/npu_top_tb.sv`, `make integ`)

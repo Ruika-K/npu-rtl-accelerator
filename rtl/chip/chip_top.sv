@@ -33,6 +33,33 @@ module chip_top
   input  logic [7:0]  pix_data_i,
   output logic        pix_ready_o,
 
+  // AXI4 master of the NPU DMA (core clock domain)
+  output logic [31:0] m_axi_awaddr_o,
+  output logic [7:0]  m_axi_awlen_o,
+  output logic [2:0]  m_axi_awsize_o,
+  output logic [1:0]  m_axi_awburst_o,
+  output logic        m_axi_awvalid_o,
+  input  logic        m_axi_awready_i,
+  output logic [63:0] m_axi_wdata_o,
+  output logic [7:0]  m_axi_wstrb_o,
+  output logic        m_axi_wlast_o,
+  output logic        m_axi_wvalid_o,
+  input  logic        m_axi_wready_i,
+  input  logic [1:0]  m_axi_bresp_i,
+  input  logic        m_axi_bvalid_i,
+  output logic        m_axi_bready_o,
+  output logic [31:0] m_axi_araddr_o,
+  output logic [7:0]  m_axi_arlen_o,
+  output logic [2:0]  m_axi_arsize_o,
+  output logic [1:0]  m_axi_arburst_o,
+  output logic        m_axi_arvalid_o,
+  input  logic        m_axi_arready_i,
+  input  logic [63:0] m_axi_rdata_i,
+  input  logic [1:0]  m_axi_rresp_i,
+  input  logic        m_axi_rlast_i,
+  input  logic        m_axi_rvalid_i,
+  output logic        m_axi_rready_o,
+
   output logic        irq_o
 );
 
@@ -147,6 +174,13 @@ module chip_top
       .s_axil_rdata_o (axil_rdata), .s_axil_rresp_o (axil_rresp), .s_axil_rvalid_o (axil_rvalid), .s_axil_rready_i (axil_rready),
       .pix_wr_en_i (pix_wr_en), .pix_wr_addr_i (pix_wr_addr), .pix_wr_data_i (pix_wr_data), .pix_wr_be_i (pix_wr_be),
       .pix_wr_ready_o (pix_wr_ready),
+      .m_axi_awaddr_o (m_axi_awaddr_o), .m_axi_awlen_o (m_axi_awlen_o), .m_axi_awsize_o (m_axi_awsize_o), .m_axi_awburst_o (m_axi_awburst_o),
+      .m_axi_awvalid_o (m_axi_awvalid_o), .m_axi_awready_i (m_axi_awready_i),
+      .m_axi_wdata_o (m_axi_wdata_o), .m_axi_wstrb_o (m_axi_wstrb_o), .m_axi_wlast_o (m_axi_wlast_o), .m_axi_wvalid_o (m_axi_wvalid_o), .m_axi_wready_i (m_axi_wready_i),
+      .m_axi_bresp_i (m_axi_bresp_i), .m_axi_bvalid_i (m_axi_bvalid_i), .m_axi_bready_o (m_axi_bready_o),
+      .m_axi_araddr_o (m_axi_araddr_o), .m_axi_arlen_o (m_axi_arlen_o), .m_axi_arsize_o (m_axi_arsize_o), .m_axi_arburst_o (m_axi_arburst_o),
+      .m_axi_arvalid_o (m_axi_arvalid_o), .m_axi_arready_i (m_axi_arready_i),
+      .m_axi_rdata_i (m_axi_rdata_i), .m_axi_rresp_i (m_axi_rresp_i), .m_axi_rlast_i (m_axi_rlast_i), .m_axi_rvalid_i (m_axi_rvalid_i), .m_axi_rready_o (m_axi_rready_o),
       .irq_o (npu_irq)
   );
 

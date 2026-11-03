@@ -462,3 +462,14 @@ Rules the wrapper relies on:
   edge-detected in the system domain, and latched in `PIX_STATUS`.
 - `irq_o` is the OR of the NPU done interrupt and the frame-done interrupt; software reads both status registers.
 
+## 12. DMA (M6)
+
+`rtl/host/npu_dma.sv` is an AXI4 master (64-bit data, single ID, INCR bursts of up to 16 beats, never crossing a
+4 KB boundary) driven by the DMA registers in `npu_regs` (programming_model.md section 7). A load writes one beat
+per cycle into act_buffer or weight_buffer through the same ports the host adapter uses; a store reads one buffer
+word per beat without prefetch (one word every few cycles, which is enough for results of a few hundred bytes).
+`npu_top` hands the memory ports to the DMA while it runs, exactly as it does for an engine, and `npu_regs`
+rejects host memory accesses meanwhile. Parameter errors (`ERR_BAD_PARAM`) and AXI error responses
+(`ERR_BAD_ADDR`) stop the transfer and are reported in DMA_STATUS. The external memory in the testbenches is
+`tb/common/axi4_slave_mem.sv`, which also checks burst alignment, size and the 4 KB rule.
+

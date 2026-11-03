@@ -39,6 +39,33 @@ module npu_top
   input  logic [ARR_N-1:0]        pix_wr_be_i,
   output logic                    pix_wr_ready_o,
 
+  // AXI4 master of the DMA (64-bit data, INCR bursts, single ID)
+  output logic [31:0] m_axi_awaddr_o,
+  output logic [7:0]  m_axi_awlen_o,
+  output logic [2:0]  m_axi_awsize_o,
+  output logic [1:0]  m_axi_awburst_o,
+  output logic        m_axi_awvalid_o,
+  input  logic        m_axi_awready_i,
+  output logic [63:0] m_axi_wdata_o,
+  output logic [7:0]  m_axi_wstrb_o,
+  output logic        m_axi_wlast_o,
+  output logic        m_axi_wvalid_o,
+  input  logic        m_axi_wready_i,
+  input  logic [1:0]  m_axi_bresp_i,
+  input  logic        m_axi_bvalid_i,
+  output logic        m_axi_bready_o,
+  output logic [31:0] m_axi_araddr_o,
+  output logic [7:0]  m_axi_arlen_o,
+  output logic [2:0]  m_axi_arsize_o,
+  output logic [1:0]  m_axi_arburst_o,
+  output logic        m_axi_arvalid_o,
+  input  logic        m_axi_arready_i,
+  input  logic [63:0] m_axi_rdata_i,
+  input  logic [1:0]  m_axi_rresp_i,
+  input  logic        m_axi_rlast_i,
+  input  logic        m_axi_rvalid_i,
+  output logic        m_axi_rready_o,
+
   output logic        irq_o
 );
 
@@ -78,6 +105,10 @@ module npu_top
   logic        argmax_valid;
   logic [3:0]  argmax_idx;
   logic [NUM_LOGITS-1:0][7:0] argmax_logits;
+  logic        dma_start, dma_dir, dma_dst_sel, dma_busy, dma_done, dma_err;
+  logic [31:0] dma_src;
+  logic [19:0] dma_dst, dma_len;
+  err_e        dma_err_code;
 
   npu_regs u_regs (
       .clk_i (clk_i), .rst_ni (rst_ni),
@@ -88,6 +119,9 @@ module npu_top
       .start_o (start), .layer_cnt_o (layer_cnt), .desc_o (desc),
       .busy_i (busy), .done_i (done), .err_i (err), .err_code_i (err_code), .cur_layer_i (cur_layer),
       .layer_cycles_i (layer_cycles), .total_cycles_i (total_cycles), .array_busy_cycles_i (array_busy_cycles),
+      .dma_start_o (dma_start), .dma_dir_o (dma_dir), .dma_dst_sel_o (dma_dst_sel), .dma_src_o (dma_src),
+      .dma_dst_o (dma_dst), .dma_len_o (dma_len), .dma_busy_i (dma_busy), .dma_done_i (dma_done),
+      .dma_err_i (dma_err), .dma_err_code_i (dma_err_code),
       .argmax_valid_i (argmax_valid), .argmax_idx_i (argmax_idx), .argmax_logits_i (argmax_logits),
       .irq_o (irq_o)
   );
@@ -112,28 +146,46 @@ module npu_top
       .argmax_start_o (argmax_start), .argmax_done_i (argmax_done), .argmax_err_i (1'b0), .argmax_err_code_i (ERR_NONE)
   );
 
-  // Memory ports of each client
-  logic               c_abuf_rd_en, p_abuf_rd_en, a_abuf_rd_en, h_abuf_rd_en;
-  logic [ABUF_AW-1:0] c_abuf_rd_addr, p_abuf_rd_addr, a_abuf_rd_addr, h_abuf_rd_addr;
-  logic               c_abuf_wr_en, p_abuf_wr_en, h_abuf_wr_en;
-  logic [ABUF_AW-1:0] c_abuf_wr_addr, p_abuf_wr_addr, h_abuf_wr_addr;
-  logic [N-1:0][7:0]  c_abuf_wr_data, p_abuf_wr_data, h_abuf_wr_data;
-  logic [N-1:0]       c_abuf_wr_be, p_abuf_wr_be, h_abuf_wr_be;
-  logic               c_wbuf_rd_en, h_wbuf_rd_en;
-  logic [WBUF_WAW-1:0] c_wbuf_rd_addr, h_wbuf_rd_addr;
-  logic               h_wbuf_wr_en;
-  logic [WBUF_WAW-1:0] h_wbuf_wr_addr;
-  logic [63:0]        h_wbuf_wr_data;
-  logic [7:0]         h_wbuf_wr_be;
+  // Memory ports of each client (c conv, p pool, a argmax, h host, d DMA)
+  logic               c_abuf_rd_en, p_abuf_rd_en, a_abuf_rd_en, h_abuf_rd_en, d_abuf_rd_en;
+  logic [ABUF_AW-1:0] c_abuf_rd_addr, p_abuf_rd_addr, a_abuf_rd_addr, h_abuf_rd_addr, d_abuf_rd_addr;
+  logic               c_abuf_wr_en, p_abuf_wr_en, h_abuf_wr_en, d_abuf_wr_en;
+  logic [ABUF_AW-1:0] c_abuf_wr_addr, p_abuf_wr_addr, h_abuf_wr_addr, d_abuf_wr_addr;
+  logic [N-1:0][7:0]  c_abuf_wr_data, p_abuf_wr_data, h_abuf_wr_data, d_abuf_wr_data;
+  logic [N-1:0]       c_abuf_wr_be, p_abuf_wr_be, h_abuf_wr_be, d_abuf_wr_be;
+  logic               c_wbuf_rd_en, h_wbuf_rd_en, d_wbuf_rd_en;
+  logic [WBUF_WAW-1:0] c_wbuf_rd_addr, h_wbuf_rd_addr, d_wbuf_rd_addr;
+  logic               h_wbuf_wr_en, d_wbuf_wr_en;
+  logic [WBUF_WAW-1:0] h_wbuf_wr_addr, d_wbuf_wr_addr;
+  logic [63:0]        h_wbuf_wr_data, d_wbuf_wr_data;
+  logic [7:0]         h_wbuf_wr_be, d_wbuf_wr_be;
 
   // Shared memory ports
   logic               abuf_rd_en, abuf_rd_valid, abuf_wr_en;
   logic [ABUF_AW-1:0] abuf_rd_addr, abuf_wr_addr;
   logic [N-1:0][7:0]  abuf_rd_data, abuf_wr_data;
   logic [N-1:0]       abuf_wr_be;
-  logic               wbuf_rd_en, wbuf_rd_valid;
-  logic [WBUF_WAW-1:0] wbuf_rd_addr;
-  logic [63:0]        wbuf_rd_data;
+  logic               wbuf_rd_en, wbuf_rd_valid, wbuf_wr_en;
+  logic [WBUF_WAW-1:0] wbuf_rd_addr, wbuf_wr_addr;
+  logic [63:0]        wbuf_rd_data, wbuf_wr_data;
+  logic [7:0]         wbuf_wr_be;
+
+  npu_dma u_dma (
+      .clk_i (clk_i), .rst_ni (rst_ni),
+      .start_i (dma_start), .dir_i (dma_dir), .dst_sel_i (dma_dst_sel), .src_i (dma_src), .dst_off_i (dma_dst), .len_i (dma_len),
+      .busy_o (dma_busy), .done_o (dma_done), .err_o (dma_err), .err_code_o (dma_err_code),
+      .abuf_wr_en_o (d_abuf_wr_en), .abuf_wr_addr_o (d_abuf_wr_addr), .abuf_wr_data_o (d_abuf_wr_data), .abuf_wr_be_o (d_abuf_wr_be),
+      .abuf_rd_en_o (d_abuf_rd_en), .abuf_rd_addr_o (d_abuf_rd_addr), .abuf_rd_data_i (abuf_rd_data), .abuf_rd_valid_i (abuf_rd_valid),
+      .wbuf_wr_en_o (d_wbuf_wr_en), .wbuf_wr_addr_o (d_wbuf_wr_addr), .wbuf_wr_data_o (d_wbuf_wr_data), .wbuf_wr_be_o (d_wbuf_wr_be),
+      .wbuf_rd_en_o (d_wbuf_rd_en), .wbuf_rd_addr_o (d_wbuf_rd_addr), .wbuf_rd_data_i (wbuf_rd_data), .wbuf_rd_valid_i (wbuf_rd_valid),
+      .m_axi_awaddr_o (m_axi_awaddr_o), .m_axi_awlen_o (m_axi_awlen_o), .m_axi_awsize_o (m_axi_awsize_o), .m_axi_awburst_o (m_axi_awburst_o),
+      .m_axi_awvalid_o (m_axi_awvalid_o), .m_axi_awready_i (m_axi_awready_i),
+      .m_axi_wdata_o (m_axi_wdata_o), .m_axi_wstrb_o (m_axi_wstrb_o), .m_axi_wlast_o (m_axi_wlast_o), .m_axi_wvalid_o (m_axi_wvalid_o), .m_axi_wready_i (m_axi_wready_i),
+      .m_axi_bresp_i (m_axi_bresp_i), .m_axi_bvalid_i (m_axi_bvalid_i), .m_axi_bready_o (m_axi_bready_o),
+      .m_axi_araddr_o (m_axi_araddr_o), .m_axi_arlen_o (m_axi_arlen_o), .m_axi_arsize_o (m_axi_arsize_o), .m_axi_arburst_o (m_axi_arburst_o),
+      .m_axi_arvalid_o (m_axi_arvalid_o), .m_axi_arready_i (m_axi_arready_i),
+      .m_axi_rdata_i (m_axi_rdata_i), .m_axi_rresp_i (m_axi_rresp_i), .m_axi_rlast_i (m_axi_rlast_i), .m_axi_rvalid_i (m_axi_rvalid_i), .m_axi_rready_o (m_axi_rready_o)
+  );
 
   conv_engine #(.N(N)) u_conv (
       .clk_i (clk_i), .rst_ni (rst_ni),
@@ -168,10 +220,13 @@ module npu_top
   );
 
   // ---------------------------------------------------------------------------
-  // Port muxes: the active engine owns the ports; the host gets them when no
-  // engine runs (npu_regs already rejects host memory accesses while busy).
+  // Port muxes: the active engine owns the ports; the DMA owns them while it
+  // runs (only started while the NPU is idle); the host gets them otherwise
+  // (npu_regs already rejects host memory accesses while busy or DMA busy);
+  // the pixel stream writes when nobody else writes.
   // ---------------------------------------------------------------------------
   always_comb begin
+    wbuf_wr_en = h_wbuf_wr_en; wbuf_wr_addr = h_wbuf_wr_addr; wbuf_wr_data = h_wbuf_wr_data; wbuf_wr_be = h_wbuf_wr_be;
     if (conv_busy) begin
       abuf_rd_en = c_abuf_rd_en; abuf_rd_addr = c_abuf_rd_addr;
       abuf_wr_en = c_abuf_wr_en; abuf_wr_addr = c_abuf_wr_addr; abuf_wr_data = c_abuf_wr_data; abuf_wr_be = c_abuf_wr_be;
@@ -184,6 +239,11 @@ module npu_top
       abuf_rd_en = a_abuf_rd_en; abuf_rd_addr = a_abuf_rd_addr;
       abuf_wr_en = 1'b0;         abuf_wr_addr = '0;            abuf_wr_data = '0;            abuf_wr_be = '0;
       wbuf_rd_en = 1'b0;         wbuf_rd_addr = '0;
+    end else if (dma_busy) begin
+      abuf_rd_en = d_abuf_rd_en; abuf_rd_addr = d_abuf_rd_addr;
+      abuf_wr_en = d_abuf_wr_en; abuf_wr_addr = d_abuf_wr_addr; abuf_wr_data = d_abuf_wr_data; abuf_wr_be = d_abuf_wr_be;
+      wbuf_rd_en = d_wbuf_rd_en; wbuf_rd_addr = d_wbuf_rd_addr;
+      wbuf_wr_en = d_wbuf_wr_en; wbuf_wr_addr = d_wbuf_wr_addr; wbuf_wr_data = d_wbuf_wr_data; wbuf_wr_be = d_wbuf_wr_be;
     end else begin
       abuf_rd_en = h_abuf_rd_en; abuf_rd_addr = h_abuf_rd_addr;
       wbuf_rd_en = h_wbuf_rd_en; wbuf_rd_addr = h_wbuf_rd_addr;
@@ -195,7 +255,7 @@ module npu_top
     end
   end
 
-  assign pix_wr_ready_o = !busy && !conv_busy && !pool_busy && !argmax_busy && !h_abuf_wr_en;
+  assign pix_wr_ready_o = !busy && !dma_busy && !conv_busy && !pool_busy && !argmax_busy && !h_abuf_wr_en;
 
   act_buffer #(.N(N)) u_abuf (
       .clk_i (clk_i), .rst_ni (rst_ni),
@@ -206,7 +266,7 @@ module npu_top
   weight_buffer u_wbuf (
       .clk_i (clk_i), .rst_ni (rst_ni),
       .rd_en_i (wbuf_rd_en), .rd_addr_i (wbuf_rd_addr), .rd_data_o (wbuf_rd_data), .rd_valid_o (wbuf_rd_valid),
-      .wr_en_i (h_wbuf_wr_en), .wr_addr_i (h_wbuf_wr_addr), .wr_data_i (h_wbuf_wr_data), .wr_be_i (h_wbuf_wr_be)
+      .wr_en_i (wbuf_wr_en), .wr_addr_i (wbuf_wr_addr), .wr_data_i (wbuf_wr_data), .wr_be_i (wbuf_wr_be)
   );
 
 endmodule

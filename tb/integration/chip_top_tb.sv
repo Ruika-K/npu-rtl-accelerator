@@ -35,6 +35,11 @@ module chip_top_tb
       .s_apb_psel_i (psel), .s_apb_penable_i (penable), .s_apb_pwrite_i (pwrite), .s_apb_paddr_i (paddr),
       .s_apb_pwdata_i (pwdata), .s_apb_pstrb_i (pstrb), .s_apb_pready_o (pready), .s_apb_prdata_o (prdata), .s_apb_pslverr_o (pslverr),
       .pix_valid_i (pix_valid), .pix_sof_i (pix_sof), .pix_data_i (pix_data), .pix_ready_o (pix_ready),
+      .m_axi_awaddr_o (), .m_axi_awlen_o (), .m_axi_awsize_o (), .m_axi_awburst_o (), .m_axi_awvalid_o (), .m_axi_awready_i (1'b0),
+      .m_axi_wdata_o (), .m_axi_wstrb_o (), .m_axi_wlast_o (), .m_axi_wvalid_o (), .m_axi_wready_i (1'b0),
+      .m_axi_bresp_i (2'b00), .m_axi_bvalid_i (1'b0), .m_axi_bready_o (),
+      .m_axi_araddr_o (), .m_axi_arlen_o (), .m_axi_arsize_o (), .m_axi_arburst_o (), .m_axi_arvalid_o (), .m_axi_arready_i (1'b0),
+      .m_axi_rdata_i ('0), .m_axi_rresp_i (2'b00), .m_axi_rlast_i (1'b0), .m_axi_rvalid_i (1'b0), .m_axi_rready_o (),
       .irq_o (irq)
   );
 

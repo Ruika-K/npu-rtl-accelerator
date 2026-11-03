@@ -28,12 +28,12 @@ reproduce with open-source tools.
 │   ├── npu_pkg.sv           # Parameters, encodings, descriptor type
 │   ├── npu_top.sv           # Top level: host path, sequencer, engines, memories, port muxes
 │   ├── compute/             # requant_unit, pe, systolic_array, conv_engine, pool_engine, argmax_engine
-│   ├── host/                # axil_slave, npu_regs, host_mem_adapter
+│   ├── host/                # axil_slave, npu_regs, host_mem_adapter, npu_dma (AXI4 master)
 │   ├── ctrl/                # npu_sequencer
 │   ├── mem/                 # sram_1r1w, act_buffer, weight_buffer
 │   └── chip/                # chip_top: reset sync, clock gate, APB bridge, async FIFO, pixel writer
 ├── tb/
-│   ├── common/              # SV reference functions, AXI4-Lite master BFM
+│   ├── common/              # SV reference functions, AXI4-Lite and APB master BFMs, AXI4 slave memory model
 │   ├── unit/                # One self-checking testbench per module
 │   └── integration/         # npu_top through AXI4-Lite, LeNet-5 networks, chip_top with two clocks
 ├── model/                   # Python integer golden model, vector generators, self-test
@@ -112,7 +112,7 @@ the int8 program 97.9% on the same 2000 test images (`model/data/mnist/net.json`
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact through AXI4-Lite | Done |
 | M5 | LeNet-5 end to end: numpy training, quantization and export, MNIST bit-exact on 100 images, performance table | MNIST done, CIFAR-10 pending its dataset |
-| M6 | Open-source synthesis flow and numbers, `chip_top` (CDC, APB bridge, clock gating), AXI4 master DMA | Synthesis and chip_top done; DMA next |
+| M6 | Open-source synthesis flow and numbers, `chip_top` (CDC, APB bridge, clock gating), AXI4 master DMA | Done |
 
 ## Originality
 

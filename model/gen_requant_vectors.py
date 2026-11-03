@@ -7,7 +7,9 @@ Consumed by tb/unit/requant_unit_tb.sv via +vectors=<path>.
 
 The distribution mirrors the testbench's own random generator but is produced
 independently, so the Python model, the SystemVerilog reference function and
-the RTL are all checked against each other.
+the RTL are all checked against each other. Boundary vectors put
+prod >>> (shift - 1) on both sides of the RTL's internal saturation limits
+(+-2^13) and of the int8 window, for every shift that can reach them.
 """
 import argparse
 import random
@@ -29,6 +31,32 @@ DIRECTED = [
     (0, 0, RQ_MULT_MAX, 0, 7, -128, 127),
     (-20, 0, 1 << 30, 31, 3, 3, 127),
 ]
+
+
+SAT_LIMIT = 1 << 13   # requant_unit saturates prod >>> (shift - 1) to 14 bits
+BOUNDARY_TARGETS = (-SAT_LIMIT - 2, -SAT_LIMIT - 1, -SAT_LIMIT, -SAT_LIMIT + 1,
+                    SAT_LIMIT - 2, SAT_LIMIT - 1, SAT_LIMIT, SAT_LIMIT + 1,
+                    -257, -256, -129, -128, 127, 128, 255, 256)
+
+
+def boundary_vectors(rng):
+    """Vectors whose prod >>> (shift - 1) lands on the targets above."""
+    out = []
+    for shift in range(1, 63):
+        for target in BOUNDARY_TARGETS:
+            mult = rng.choice((RQ_MULT_MIN, RQ_MULT_MAX, rng.randint(RQ_MULT_MIN, RQ_MULT_MAX)))
+            # smallest sum with sum * mult >= target * 2^(shift-1), then its neighbours
+            num = target << (shift - 1)
+            base = -((-num) // mult)
+            for ssum in (base - 1, base, base + 1):
+                acc = max(INT32_MIN, min(INT32_MAX, ssum))
+                bias = ssum - acc
+                if not INT32_MIN <= bias <= INT32_MAX:
+                    continue
+                z_out = rng.randint(INT8_MIN, INT8_MAX)
+                a, b = rng.randint(INT8_MIN, INT8_MAX), rng.randint(INT8_MIN, INT8_MAX)
+                out.append((acc, bias, mult, shift, z_out, min(a, b), max(a, b)))
+    return out
 
 
 def rand_acc(rng):
@@ -86,12 +114,13 @@ def main():
 
     rng = random.Random(args.seed)
     with open(args.output, "w", encoding="ascii") as f:
-        for vec in DIRECTED:
+        fixed = DIRECTED + boundary_vectors(rng)
+        for vec in fixed:
             f.write(" ".join(str(v) for v in (*vec, requant(*vec))) + "\n")
         for _ in range(args.n):
             vec = rand_vector(rng)
             f.write(" ".join(str(v) for v in (*vec, requant(*vec))) + "\n")
-    print(f"wrote {len(DIRECTED) + args.n} vectors to {args.output}")
+    print(f"wrote {len(fixed) + args.n} vectors to {args.output}")
 
 
 if __name__ == "__main__":

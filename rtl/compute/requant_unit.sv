@@ -8,6 +8,14 @@
 //   S3  rounded = (prod + 2^(shift-1)) >>> shift               (round half up)
 //       q       = clamp(rounded + z_out, act_min, act_max)     (int8)
 //
+// S3 is computed without the 65-bit rounding add and with a narrow tail:
+//   - for shift >= 1, (prod + 2^(shift-1)) >>> shift == ((prod >>> (shift-1)) + 1) >>> 1
+//     (floor division: write prod >>> (shift-1) as k, then both sides are floor((k+1)/2));
+//   - prod >>> (shift-1) is saturated to SAT_W bits first. Any value outside that
+//     range is at least 4096 away from zero after rounding, so with an int8 zero
+//     point it compares the same way against every int8 act_min / act_max, and the
+//     clamp result is unchanged. The zero-point add and the compares are SAT_W+1 bits.
+//
 // Contract:
 //   - mult is a positive int32 in [2^30, 2^31); shift is in 1..62.
 //     shift == 0 is outside the documented range but kept well defined:
@@ -37,7 +45,7 @@ module requant_unit
 
   localparam int unsigned SUM_W  = ACC_W + 1;          // 33
   localparam int unsigned MUL_W  = SUM_W + ACC_W;      // 65
-  localparam int unsigned ZP_W   = MUL_W + 1;          // 66
+  localparam int unsigned SAT_W  = 14;                 // saturated width of the shifted product
 
   // ---------------------------------------------------------------------------
   // Stage 1: bias add
@@ -108,25 +116,37 @@ module requant_unit
   // ---------------------------------------------------------------------------
   // Stage 3: round, shift, zero point, clamp
   // ---------------------------------------------------------------------------
-  logic signed [MUL_W-1:0] rnd_term_c;
-  logic signed [MUL_W-1:0] rounded_c;
-  logic signed [MUL_W-1:0] shifted_c;
-  logic signed [ZP_W-1:0]   with_zp_c;
-  logic signed [ZP_W-1:0]   min_x_c, max_x_c;
+  logic [RQ_SHIFT_W-1:0]    sh_m1_c;      // shift - 1, or 0 when shift is 0
+  logic signed [MUL_W-1:0]  shr_c;        // prod >>> (shift - 1)
+  logic                     in_range_c;   // shr_c fits in SAT_W bits
+  logic signed [SAT_W-1:0]  sat_c;
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic signed [SAT_W:0]    inc_c;        // bit 0 is dropped by the >>> 1
+  /* verilator lint_on UNUSEDSIGNAL */
+  logic signed [SAT_W-1:0]  rounded_c;
+  logic signed [SAT_W:0]    with_zp_c;
+  logic signed [SAT_W:0]    min_x_c, max_x_c;
   logic signed [ACT_W-1:0]  q_c;
 
   always_comb begin
-    if (s2_shift_q == '0) begin
-      rnd_term_c = '0;
+    sh_m1_c    = (s2_shift_q == '0) ? '0 : s2_shift_q - RQ_SHIFT_W'(1);
+    shr_c      = s2_prod_q >>> sh_m1_c;
+    in_range_c = (shr_c[MUL_W-1:SAT_W-1] == '0) || (shr_c[MUL_W-1:SAT_W-1] == '1);
+    if (in_range_c) begin
+      sat_c = shr_c[SAT_W-1:0];
     end else begin
-      rnd_term_c = MUL_W'(1) <<< (s2_shift_q - RQ_SHIFT_W'(1));
+      sat_c = shr_c[MUL_W-1] ? {1'b1, {(SAT_W-1){1'b0}}} : {1'b0, {(SAT_W-1){1'b1}}};
     end
-    rounded_c = s2_prod_q + rnd_term_c;
-    shifted_c = rounded_c >>> s2_shift_q;
-    with_zp_c = $signed({shifted_c[MUL_W-1], shifted_c})
-              + $signed({{(ZP_W-ACT_W){s2_z_q[ACT_W-1]}}, s2_z_q});
-    min_x_c   = $signed({{(ZP_W-ACT_W){s2_min_q[ACT_W-1]}}, s2_min_q});
-    max_x_c   = $signed({{(ZP_W-ACT_W){s2_max_q[ACT_W-1]}}, s2_max_q});
+    inc_c = $signed({sat_c[SAT_W-1], sat_c}) + $signed((SAT_W+1)'(1));
+    if (s2_shift_q == '0) begin
+      rounded_c = sat_c;                       // shift 0: no rounding term, no shift
+    end else begin
+      rounded_c = inc_c[SAT_W:1];              // (k + 1) >>> 1
+    end
+    with_zp_c = $signed({rounded_c[SAT_W-1], rounded_c})
+              + $signed({{(SAT_W+1-ACT_W){s2_z_q[ACT_W-1]}}, s2_z_q});
+    min_x_c   = $signed({{(SAT_W+1-ACT_W){s2_min_q[ACT_W-1]}}, s2_min_q});
+    max_x_c   = $signed({{(SAT_W+1-ACT_W){s2_max_q[ACT_W-1]}}, s2_max_q});
 
     if (with_zp_c > max_x_c) begin
       q_c = s2_max_q;

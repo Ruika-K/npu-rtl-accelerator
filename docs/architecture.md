@@ -169,7 +169,8 @@ q_out   = clamp(rounded + z_out, act_min, act_max)    // int8 result
 - 128 KB, 64 bits wide, 16K words, one read port plus one write port with byte enables (a 32-bit host write uses half a word).
 - The read port feeds the conv_engine weight stream, one word per cycle (8 int8 values, the 8 columns of one n_tile).
 - The bias is read from here too. To avoid contending with the weight stream for the read port, the 8 biases of an
-  n_tile are prefetched into registers before the tile starts, taking 4 cycles.
+  n_tile are prefetched into one of two register banks (bank = n_tile[0]) in the idle cycles before its first tile,
+  taking 4 word reads; `b_base` is therefore 8-byte aligned. The other bank still serves the previous n_tile's drain.
 
 ### 4.4 Capacity budget (LeNet-5 MNIST, int8)
 

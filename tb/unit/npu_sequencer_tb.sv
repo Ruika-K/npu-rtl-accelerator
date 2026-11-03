@@ -288,6 +288,7 @@ module npu_sequencer_tb
     desc_i[0].w_base = 32'h4;                                     expect_err(1, ERR_BAD_ADDR, 0, "w_base misaligned");
     desc_i[0].w_base = 32'h0;
     desc_i[0].b_base = 32'h102;                                   expect_err(1, ERR_BAD_ADDR, 0, "b_base misaligned");
+    desc_i[0].b_base = 32'h104;                                   expect_err(1, ERR_BAD_ADDR, 0, "b_base only 4-byte aligned");
     desc_i[0].b_base = 32'h100;
     desc_i[0].out_base = 32'(ABUF_BYTES - 4703);                  expect_err(1, ERR_BAD_ADDR, 0, "output one byte past the buffer");
     desc_i[0].out_base = 32'(ABUF_BYTES - 4704);

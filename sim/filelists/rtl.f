@@ -5,6 +5,7 @@ rtl/mem/weight_buffer.sv
 rtl/compute/requant_unit.sv
 rtl/compute/pe.sv
 rtl/compute/systolic_array.sv
+rtl/compute/conv_engine.sv
 rtl/host/axil_slave.sv
 rtl/host/npu_regs.sv
 rtl/host/host_mem_adapter.sv

@@ -22,9 +22,9 @@ SEED      ?= 1
 
 # Units: RTL module names that have tb/unit/<module>_tb.sv and
 # sim/filelists/unit_<module>.f
-UNITS     ?= requant_unit pe systolic_array axil_slave npu_regs npu_sequencer act_buffer
+UNITS     ?= requant_unit pe systolic_array axil_slave npu_regs npu_sequencer act_buffer conv_engine
 LINT_TOPS ?= npu_top requant_unit pe systolic_array axil_slave npu_regs npu_sequencer \
-             sram_1r1w act_buffer weight_buffer host_mem_adapter
+             sram_1r1w act_buffer weight_buffer host_mem_adapter conv_engine
 
 RTL_F     ?= sim/filelists/rtl.f
 TOP       ?= npu_top_tb
@@ -33,12 +33,14 @@ FILELIST  ?= sim/filelists/tb.f
 REQUANT_N ?= 100000
 GEMM_N    ?= 30
 DESC_N    ?= 2000
+LAYER_N   ?= 24
 VEC_DIR   := $(BUILD_DIR)/vectors
 REQUANT_VECTORS := $(VEC_DIR)/requant_s$(SEED)_n$(REQUANT_N).txt
 GEMM_VECTORS    := $(VEC_DIR)/gemm_s$(SEED)_n$(GEMM_N).txt
 DESC_VECTORS    := $(VEC_DIR)/desc_s$(SEED)_n$(DESC_N).txt
+LAYER_VECTORS   := $(VEC_DIR)/layers_s$(SEED)_n$(LAYER_N).txt
 PLUSARGS  ?= +seed=$(SEED) +vectors=$(abspath $(REQUANT_VECTORS)) +gemm_vectors=$(abspath $(GEMM_VECTORS)) \
-             +desc_vectors=$(abspath $(DESC_VECTORS))
+             +desc_vectors=$(abspath $(DESC_VECTORS)) +layer_vectors=$(abspath $(LAYER_VECTORS))
 
 VERILATOR_LINT_FLAGS ?= --lint-only -Wall --timescale 1ns/1ps
 VERILATOR_SIM_FLAGS  ?= --binary --timing -Wall -Wno-fatal --timescale 1ns/1ps -j 0 \
@@ -66,7 +68,11 @@ lint-%:
 model-test:
 	$(PYTHON) model/test_npu_ref.py
 
-vectors: $(REQUANT_VECTORS) $(GEMM_VECTORS) $(DESC_VECTORS)
+vectors: $(REQUANT_VECTORS) $(GEMM_VECTORS) $(DESC_VECTORS) $(LAYER_VECTORS)
+
+$(LAYER_VECTORS): model/gen_layer_vectors.py model/npu_ref.py
+	mkdir -p $(VEC_DIR)
+	$(PYTHON) model/gen_layer_vectors.py --n $(LAYER_N) --seed $(SEED) -o $@
 
 $(DESC_VECTORS): model/gen_desc_vectors.py model/npu_ref.py
 	mkdir -p $(VEC_DIR)

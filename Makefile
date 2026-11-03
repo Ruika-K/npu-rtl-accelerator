@@ -54,7 +54,7 @@ VCS_FLAGS ?= -full64 -sverilog -timescale=1ns/1ps -debug_access+all
 
 # lint-%, unit-% and vcs-unit-% are pattern rules; GNU make skips pattern
 # search for .PHONY targets, so they are deliberately not listed here.
-.PHONY: help lint model-test vectors unit integ integ-layers integ-chip ci synth synth-xilinx synth-ecp5 compile run clean
+.PHONY: help lint lint-synth-wrapper model-test vectors unit integ integ-layers integ-chip ci synth synth-xilinx synth-ecp5 compile run clean
 
 help:
 	@sed -n '2,16p' Makefile | sed 's/^# \{0,1\}//'
@@ -62,7 +62,10 @@ help:
 # ---------------------------------------------------------------------------
 # Lint
 # ---------------------------------------------------------------------------
-lint: $(addprefix lint-,$(LINT_TOPS))
+lint: $(addprefix lint-,$(LINT_TOPS)) lint-synth-wrapper
+
+lint-synth-wrapper:
+	$(VERILATOR) $(VERILATOR_LINT_FLAGS) -f $(RTL_F) synth/npu_top_ooc.sv --top-module npu_top_ooc
 
 lint-%:
 	$(VERILATOR) $(VERILATOR_LINT_FLAGS) -f $(LINT_F) --top-module $*
@@ -160,9 +163,14 @@ synth-xilinx: $(SYNTH_DIR)/npu_top.v
 	$(YOSYS) -q -l $(SYNTH_DIR)/xilinx.log -s synth/xilinx.ys
 	@python3 synth/stat_table.py $(SYNTH_DIR)/xilinx_stat.txt
 
-synth-ecp5: $(SYNTH_DIR)/npu_top.v
+# ECP5 place and route runs on the out-of-context wrapper (see synth/npu_top_ooc.sv)
+$(SYNTH_DIR)/npu_top_ooc.v: $(RTL_SRCS) synth/npu_top_ooc.sv
+	mkdir -p $(SYNTH_DIR)
+	$(SV2V) --top npu_top_ooc $(RTL_SRCS) synth/npu_top_ooc.sv > $@
+
+synth-ecp5: $(SYNTH_DIR)/npu_top_ooc.v
 	$(YOSYS) -q -l $(SYNTH_DIR)/ecp5.log -s synth/ecp5.ys
-	$(NEXTPNR_ECP5) --85k --package CABGA381 --speed 8 --json $(SYNTH_DIR)/npu_top_ecp5.json \
+	$(NEXTPNR_ECP5) --85k --package CABGA381 --speed 8 --json $(SYNTH_DIR)/npu_top_ooc_ecp5.json \
 	    --freq 100 --timing-allow-fail --seed 1 --log $(SYNTH_DIR)/nextpnr.log > /dev/null 2>&1 \
 	    || { python3 synth/nextpnr_summary.py $(SYNTH_DIR)/nextpnr.log; exit 1; }
 	@python3 synth/nextpnr_summary.py $(SYNTH_DIR)/nextpnr.log

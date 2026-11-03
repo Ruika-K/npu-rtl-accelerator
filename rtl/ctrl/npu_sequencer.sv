@@ -117,7 +117,7 @@ module npu_sequencer
     oh      = 17'(in_h) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;
     ow      = 17'(in_w) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;
     n_pad   = pad_to_arr(d.c_out);
-    if (d.w_base[2:0] != 3'b000 || d.b_base[1:0] != 2'b00) return ERR_BAD_ADDR;
+    if (d.w_base[2:0] != 3'b000 || d.b_base[2:0] != 3'b000) return ERR_BAD_ADDR;   // both 8-byte aligned
     in_hw   = 32'(in_h) * 32'(in_w);
     out_hw  = 32'(oh) * 32'(ow);
     in_end  = 49'(d.in_base) + 49'(in_hw) * 49'(d.c_in);

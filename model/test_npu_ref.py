@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Hand-computed checks for model/npu_ref.py. Run: python3 model/test_npu_ref.py"""
 from npu_ref import (ERR_BAD_ADDR, ERR_BAD_OUT_DIM, ERR_BAD_PARAM, ERR_NONE, INT32_MAX, INT32_MIN, OP_CONV2D, OP_FC,
-                     desc_check, desc_pack, desc_unpack, matmul_int, pe_tile, quantize_multiplier, requant)
+                     argmax, bytes_to_chw, chw_bytes, conv2d_layer, desc_check, desc_pack, desc_unpack, fc_layer,
+                     matmul_int, maxpool2x2, pack_bias, pack_weights, pe_tile, quantize_multiplier, requant)
 
 HALF = 1 << 30   # with shift 31 this is an exact x0.5 multiplier
 
@@ -63,6 +64,23 @@ def main():
           "w_base": 0x01000, "b_base": 0x0CC00}
     assert desc_check(fc) == ERR_NONE
     assert desc_check({**fc, "k": 9, "pad": 15, "in_h": 7}) == ERR_NONE   # FC ignores k, pad, in_h
+
+    # conv2d: 1x1 kernel on a 1x1 image is a dot product; padding reads z_in
+    x = [[[3]], [[-4]]]
+    w = [[[[2]], [[5]]], [[[1]], [[1]]]]
+    out = conv2d_layer(x, w, [0, 0], 1, 0, 0, 1 << 30, 31, 0, -128, 127)
+    assert out == [[[-7]], [[0]]], out                       # (6-20)*0.5 = -7; (3-4)*0.5 = -0.5 rounds half up to 0
+    x = [[[1, 2], [3, 4]]]
+    w = [[[[1, 0], [0, 0]]]]
+    out = conv2d_layer(x, w, [0], 2, 1, 9, 1 << 30, 31, 0, -128, 127)   # z_in = 9 fills the border
+    assert out[0] == [[5, 5, 5], [5, 1, 1], [5, 2, 2]], out   # x0.5 then round half up
+    assert maxpool2x2([[[1, 5, 3], [2, 4, 9], [7, 7, 7]]]) == [[[5]]]
+    assert argmax([3, 9, 9, 1]) == 1
+    assert fc_layer([1, 2], [[3, 4], [-1, 0]], [0, 0], 1 << 30, 31, 0, -128, 127) == [6, 0]   # 5.5 -> 6, -0.5 -> 0
+    t = [[[1, -2], [3, -4]], [[5, 6], [-7, 8]]]
+    assert bytes_to_chw(chw_bytes(t), 2, 2, 2) == t
+    assert pack_weights([[[[1]]]]) == [1, 0, 0, 0, 0, 0, 0, 0]
+    assert pack_bias([-1], 1)[:8] == [255, 255, 255, 255, 0, 0, 0, 0]
 
     print("PASS: test_npu_ref")
 

@@ -64,7 +64,7 @@ Each descriptor is 16 32-bit words at offset `0x100 + 64 * idx`.
 | W3 | [31:0] | IN_BASE | Byte offset inside act_buffer |
 | W4 | [31:0] | OUT_BASE | Byte offset inside act_buffer |
 | W5 | [31:0] | W_BASE | Byte offset inside weight_buffer, 8-byte aligned |
-| W6 | [31:0] | B_BASE | Byte offset inside weight_buffer, 4-byte aligned |
+| W6 | [31:0] | B_BASE | Byte offset inside weight_buffer, 8-byte aligned |
 | W7 | [31:0] | RQ_MULT | Positive int32 in `[2^30, 2^31)` |
 | W8 | [5:0] | RQ_SHIFT | 1 to 62 |
 | W9 | [7:0] | Z_IN | Input zero point, int8 |
@@ -103,7 +103,7 @@ Output sizes are computed by hardware: `OUT = IN + 2*PAD - K + 1` (CONV2D), `OUT
 | `0x00` | No error |
 | `0x01` | Illegal OP |
 | `0x02` | Unsupported parameter: K = 0 or > 7, PAD > 7, STRIDE_M1 != 0 (CONV2D), C_IN or C_OUT = 0, K_total > 4096, RQ_SHIFT = 0 or 63, RQ_MULT outside `[2^30, 2^31)`, ACT_MIN > ACT_MAX, ARGMAX C_IN = 0 or > 16 |
-| `0x03` | Address out of range or misaligned: input, output, weight or bias region exceeds its buffer, W_BASE not 8-byte aligned, B_BASE not 4-byte aligned |
+| `0x03` | Address out of range or misaligned: input, output, weight or bias region exceeds its buffer, W_BASE or B_BASE not 8-byte aligned |
 | `0x04` | LAYER_CNT = 0 or > 16 |
 | `0x05` | Output size <= 0 (K > IN + 2*PAD) |
 

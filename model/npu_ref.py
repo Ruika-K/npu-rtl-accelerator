@@ -256,7 +256,7 @@ def desc_check(d):
     oh = in_h + 2 * pad - k + 1
     ow = in_w + 2 * pad - k + 1
     n_pad = pad_to_arr(d["c_out"])
-    if d["w_base"] % 8 != 0 or d["b_base"] % 4 != 0:
+    if d["w_base"] % 8 != 0 or d["b_base"] % 8 != 0:
         return ERR_BAD_ADDR
     if d["in_base"] + in_h * in_w * d["c_in"] > ABUF_BYTES:
         return ERR_BAD_ADDR
@@ -267,3 +267,124 @@ def desc_check(d):
     if d["b_base"] + n_pad * 4 > WBUF_BYTES:
         return ERR_BAD_ADDR
     return ERR_NONE
+
+
+# ---------------------------------------------------------------------------
+# Layers (architecture.md sections 3, 5, 6) and memory images (section 4)
+# Tensors are nested lists in CHW order: x[c][h][w], int8 values.
+# ---------------------------------------------------------------------------
+
+def to_u8(v):
+    """int8 -> the byte stored in memory (two's complement)."""
+    _check_int8("v", v)
+    return v & 0xFF
+
+
+def from_u8(b):
+    return _s8(b)
+
+
+def chw_bytes(x):
+    """CHW tensor -> list of bytes in memory order (address = c*H*W + h*W + w)."""
+    out = []
+    for plane in x:
+        for row in plane:
+            for v in row:
+                out.append(to_u8(v))
+    return out
+
+
+def bytes_to_chw(data, c, h, w):
+    assert len(data) >= c * h * w
+    it = iter(data)
+    return [[[from_u8(next(it)) for _ in range(w)] for _ in range(h)] for _ in range(c)]
+
+
+def pack_weights(w, n=ARR_N):
+    """w[cout][cin][k][k] -> bytes of W[K_total][N_pad] (k order ci, kh, kw; N padded to n with zeros)."""
+    cout = len(w)
+    cin = len(w[0])
+    k = len(w[0][0])
+    n_pad = (cout + n - 1) // n * n
+    out = []
+    for ci in range(cin):
+        for kh in range(k):
+            for kw in range(k):
+                for co in range(n_pad):
+                    out.append(to_u8(w[co][ci][kh][kw]) if co < cout else 0)
+    return out
+
+
+def pack_bias(bias, cout, n=ARR_N):
+    """bias[cout] int32 -> little-endian bytes, padded to a multiple of n entries."""
+    n_pad = (cout + n - 1) // n * n
+    out = []
+    for co in range(n_pad):
+        v = bias[co] if co < cout else 0
+        _check_int32("bias", v)
+        v &= 0xFFFFFFFF
+        out += [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]
+    return out
+
+
+def conv2d_layer(x, w, bias, k, pad, z_in, mult, shift, z_out, act_min, act_max):
+    """CONV2D exactly as the hardware computes it.
+
+    x[cin][h][w] int8, w[cout][cin][k][k] int8, bias[cout] int32 (already
+    holds the folded zero-point correction). Padding positions read z_in.
+    Returns out[cout][oh][ow] int8 after requantization.
+    """
+    cin, h, wd = len(x), len(x[0]), len(x[0][0])
+    cout = len(w)
+    oh = h + 2 * pad - k + 1
+    ow = wd + 2 * pad - k + 1
+    if oh <= 0 or ow <= 0:
+        raise ValueError("empty output")
+    out = []
+    for co in range(cout):
+        plane = []
+        for y in range(oh):
+            row = []
+            for xx in range(ow):
+                acc = 0
+                for ci in range(cin):
+                    for kh in range(k):
+                        ih = y + kh - pad
+                        for kw in range(k):
+                            iw = xx + kw - pad
+                            v = x[ci][ih][iw] if (0 <= ih < h and 0 <= iw < wd) else z_in
+                            acc += v * w[co][ci][kh][kw]
+                _check_int32("acc", acc)
+                row.append(requant(acc, bias[co], mult, shift, z_out, act_min, act_max))
+            plane.append(row)
+        out.append(plane)
+    return out
+
+
+def fc_layer(x_vec, w_mat, bias, mult, shift, z_out, act_min, act_max):
+    """FC as the 1x1 CONV2D the hardware runs: x_vec[cin], w_mat[cout][cin]."""
+    x = [[[v]] for v in x_vec]
+    w = [[[[wv]] for wv in row] for row in w_mat]
+    out = conv2d_layer(x, w, bias, 1, 0, 0, mult, shift, z_out, act_min, act_max)
+    return [plane[0][0] for plane in out]
+
+
+def maxpool2x2(x):
+    """2x2 stride-2 max pooling per channel; output size rounds down."""
+    out = []
+    for plane in x:
+        h, w = len(plane), len(plane[0])
+        oh, ow = h // 2, w // 2
+        out.append([[max(plane[2 * y][2 * xx], plane[2 * y][2 * xx + 1],
+                         plane[2 * y + 1][2 * xx], plane[2 * y + 1][2 * xx + 1])
+                     for xx in range(ow)] for y in range(oh)])
+    return out
+
+
+def argmax(logits):
+    """Index of the maximum; ties go to the lowest index."""
+    best, best_i = logits[0], 0
+    for i, v in enumerate(logits):
+        if v > best:
+            best, best_i = v, i
+    return best_i

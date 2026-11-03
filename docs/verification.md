@@ -34,21 +34,24 @@ Rules:
 | `requant_unit` | Random acc / bias / mult / shift / zero point, plus directed cases for saturation, rounding exactly at 0.5 and shift extremes | Compared one by one with the SV integer reference function; that function is in turn cross-checked against Python |
 | `pe` | Random int8 sequences with first / last flags | Accumulated value and shadow timing |
 | `systolic_array` | GEMMs driven tile by tile as `conv_engine` will: M up to 64, K from 1 to 512, N up to 32, partial tiles with random garbage in unused lanes, random idle cycles anywhere, N-K idle cycles after tiles with K < N; data modes include all -128 and random extremes | Every drained element equals the SV integer matrix product (itself cross-checked against Python GEMM vectors); column order 0..N-1; `drain_valid_o` never drops mid-drain; the drain starts exactly N-1 edges after the last beat |
-| `act_buffer` | Random unaligned 8-byte reads and writes, byte enables, same-cycle read and write to different addresses | Compared with a byte-array model in SV |
-| `conv_addr_gen` | Random H / W / C_in / C_out / K / pad | Address stream, lane masks and first / last match a Python-generated sequence cycle by cycle |
+| `act_buffer` | Random unaligned 8-byte reads and writes with byte enables, same-cycle read and write to different rows, read the cycle after a write, buffer-edge wrap, back-to-back reads | Compared with a byte-array model in SV; fixed 2-cycle latency |
+| `conv_engine`, `pool_engine`, `argmax_engine` | Single-layer cases from `model/gen_layer_vectors.py` (directed kernel sizes, paddings, partial tiles, FC shapes, odd pool sizes, argmax ties, plus random), with the real memories; images loaded through the memory write ports, a guard band around the output region | Output region bit-exact with the Python model, guard bands untouched, no writes outside the region or while idle; argmax index and logits |
 | `axil_slave` | `tb/common/axil_master_bfm.sv` drives every AW/W ordering, random response back-pressure and a same-cycle read/write; a responder model answers after random delays and flags errors by address | Data and strobes reach the responder, read data and response codes, AXI4-Lite rules (valid held until ready, readies only with valids, no simultaneous read and write accept), one internal-bus transaction at a time, write wins arbitration |
 | `npu_regs` (behind `axil_slave`) | Testbench plays the sequencer, the argmax engine and both memories; directed register sequences plus random mixed traffic against a reference | Reset values, RW / RO / W1P / W1C, START side effects, irq, descriptor words with byte strobes and reserved masks, `desc_o` decoding, memory-window routing, SLVERR for unmapped / misaligned / busy accesses, HOST_CONFLICT |
 | `npu_sequencer` | Stub engines with random latency or injected errors, a LeNet-5 program, NOP layers, start while busy, one directed case per check, descriptors from `model/gen_desc_vectors.py` | Engine order and forwarded descriptors (FC view), done / busy / cur_layer timing, every error code with the failing layer, the three counters against a cycle-exact model, error codes equal to the Python model on 2000 random descriptors |
 | `pool_engine`, `argmax_engine` | Random tensors | Match numpy |
 
-### 2.2 Integration level (`tb/integration/`)
+### 2.2 Integration level (`tb/integration/npu_top_tb.sv`, `make integ`)
 
-1. Single CONV2D layer: random shape and weights, loaded over AXI4-Lite, run, output tensor read back and compared with the golden model.
-2. Single FC, MAXPOOL and ARGMAX likewise.
+1. Single CONV2D, FC, MAXPOOL and ARGMAX layers from the same layer vectors: images loaded over AXI4-Lite with
+   32-bit writes and strobes, descriptor and LAYER_CNT written, START, STATUS polled, output region and guard bands
+   read back and compared with the golden model; ARGMAX checked through RESULT and LOGITS. (M4)
+2. Around the cases: ID, an error descriptor in layer 1 of a 2-layer program (ERR, ERR_CODE, CUR_LAYER) followed by
+   normal runs, a host memory read rejected while busy with HOST_CONFLICT, perf counters, DONE W1C and irq. (M4)
 3. Full 8-layer LeNet-5 on MNIST: read back and compare layer by layer; then run 100 images and require the
-   accuracy to equal that of `npu_ref.py` exactly.
-4. LeNet-5 on CIFAR-10: same, with the other data files.
-5. Error injection: at least one case per error code.
+   accuracy to equal that of `npu_ref.py` exactly. (M5)
+4. LeNet-5 on CIFAR-10: same, with the other data files. (M5)
+5. Error injection: at least one case per error code. (M3 unit level, M5 at the top)
 
 ### 2.3 Assertions (SVA in `tb/common/`, bound to the RTL)
 
@@ -77,7 +80,7 @@ Constraints:
 - Every testbench ends with a `PASS:` or `FAIL:` line and exits via `$finish` / `$fatal`; the Makefile judges by the `PASS` line in the log.
 - Each unit testbench has its own filelist `sim/filelists/unit_<module>.f`, shared by Verilator and VCS;
   `make unit-<module>` runs Verilator, `make vcs-unit-<module>` runs VCS.
-- `make lint`, `make model-test`, `make unit` and `make smoke` make up `make ci`, which GitHub Actions runs in full; `make integ` is added in M4.
+- `make lint`, `make model-test`, `make unit` and `make integ` make up `make ci`, which GitHub Actions runs in full.
 - RTL lint is `-Wall` with warnings fatal; testbench builds tolerate warnings, but known checker-style warnings are
   annotated with a local `lint_off` and a reason.
 - Coverage: one functional-point review with Verilator `--coverage` in M5, without chasing a number.
@@ -89,6 +92,6 @@ Constraints:
 | M1 | `requant_unit` and `pe` unit testbenches pass; the requant function of `npu_ref.py` agrees with the SV reference function on 100k random samples |
 | M2 | `systolic_array` is bit-exact on 200 random GEMMs, including K < 8 and K > 256 |
 | M3 | `axil_slave`, `npu_regs` and `npu_sequencer` unit testbenches pass; every error code is covered; descriptor checks agree with the Python model |
-| M4 | Single-layer CONV2D / FC / MAXPOOL / ARGMAX integration testbenches are bit-exact |
+| M4 | Single-layer CONV2D / FC / MAXPOOL / ARGMAX cases are bit-exact at the engine level and through AXI4-Lite at the top level |
 | M5 | LeNet-5 on MNIST and CIFAR-10 is bit-exact end to end; accuracy equals the golden model; CI green; README has the performance table |
 | M6 | Optional items each define their own: DMA integration testbench, chip_top CDC testbench, FPGA synthesis report |

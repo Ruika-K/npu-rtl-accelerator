@@ -20,7 +20,7 @@ def valid_base(rng):
         "op": op, "k": rng.choice((1, 3, 5, 7)), "pad": rng.randint(0, 3), "stride_m1": 0,
         "in_h": rng.randint(2, 32), "in_w": rng.randint(2, 32), "c_in": rng.randint(1, 16), "c_out": rng.randint(1, 32),
         "in_base": rng.randrange(0, 0x2000, 4), "out_base": rng.randrange(0x2000, 0x4000, 4),
-        "w_base": rng.randrange(0, 0x8000, 8), "b_base": rng.randrange(0x8000, 0xA000, 4),
+        "w_base": rng.randrange(0, 0x8000, 8), "b_base": rng.randrange(0x8000, 0xA000, 8),
         "rq_mult": rng.randint(RQ_MULT_MIN, RQ_MULT_MAX), "rq_shift": rng.randint(1, 62),
         "z_in": rng.randint(-128, 127), "z_out": rng.randint(-128, 127), "act_min": -128, "act_max": 127,
     }
@@ -54,7 +54,7 @@ def mutate(rng, d):
         elif field == "w_base":
             d[field] = rng.choice((4, 12, WBUF_BYTES - 8, WBUF_BYTES, 0xFFFF_FFF8))
         elif field == "b_base":
-            d[field] = rng.choice((2, 6, WBUF_BYTES - 4, WBUF_BYTES, 0xFFFF_FFFC))
+            d[field] = rng.choice((2, 4, 6, WBUF_BYTES - 8, WBUF_BYTES, 0xFFFF_FFF8))
         elif field == "rq_mult":
             d[field] = rng.choice((0, 1, RQ_MULT_MIN - 1, RQ_MULT_MAX + 1, 0xFFFF_FFFF))
         elif field == "rq_shift":

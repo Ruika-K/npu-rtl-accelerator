@@ -208,9 +208,11 @@ addresses on demand (im2col by address generation). FC is the special case `H = 
 
 - `last` reaches PE(i, j) at `tile_start + K_total - 1 + i + j`. The shadow register is written only in that cycle
   and then holds for K_total cycles.
-- Column drain: once `last` has reached PE(ARR_N-1, 0), from the next cycle on one whole column
-  `j = 0, 1, ..., ARR_N-1` (8 int32 values, one per m) is read out per cycle through an 8:1 mux directly from the
-  shadows; there is no shift chain.
+- Column drain: in the cycle after the clock edge at which PE(ARR_N-1, 0) consumes `last` (ARR_N - 1 edges after
+  the edge that consumed that beat at the array input), `drain_valid_o` rises and one whole column
+  `j = 0, 1, ..., ARR_N-1` (8 int32 values, one per m) is presented per cycle through an 8:1 mux directly from the
+  shadows; there is no shift chain. Column j is presented exactly when its row ARR_N-1 shadow becomes valid, so the
+  mux output is combinational from the shadow registers and the consumer registers it.
 - No-conflict condition: tile period `P >= ARR_N`. Hence `P = max(K_total, ARR_N)`; when K_total is below 8,
   `conv_addr_gen` inserts idle cycles.
 - The 8 values of one drained column belong to the same output channel `n = n0 + j`, which in CHW layout are 8
@@ -316,11 +318,19 @@ If the engine finds an illegal parameter, it raises `err_o` with `err_code_o` on
 
 ### 7.7 systolic_array
 
+Parameter `N` (default `ARR_N`).
+
 | Port | Description |
 | --- | --- |
-| `in_valid_i`, `in_first_i`, `in_last_i` | k-position flags for this cycle's input vectors |
-| `act_i[ARR_N][7:0]`, `wgt_i[ARR_N][7:0]` | Unskewed inputs; the skew happens inside the module |
-| `drain_valid_o`, `drain_col_idx_o[$clog2(ARR_N)-1:0]`, `drain_data_o[ARR_N][31:0]` | One column per cycle |
+| `in_valid_i`, `in_first_i`, `in_last_i` | k-position flags for this cycle's input vectors; `first` / `last` only count when `valid` is 1 |
+| `act_i[N][7:0]`, `wgt_i[N][7:0]` | Unskewed inputs; lane i of `act_i` is row i, lane j of `wgt_i` is column j; the skew happens inside the module |
+| `drain_valid_o` | High for N consecutive cycles per tile, starting N - 1 edges after the edge that consumed the tile's `last` beat |
+| `drain_col_idx_o[$clog2(N)-1:0]` | 0 .. N-1 during a drain |
+| `drain_data_o[N][31:0]` | Column `drain_col_idx_o` of the shadows, lane i = row i; combinational from the shadow registers |
+
+Contract: at least N cycles between consecutive `last` beats at the input (tile period `P >= N`), counting idle
+cycles. Idle cycles may appear anywhere, including inside a tile. A `last` that arrives while a drain is in progress
+restarts the drain and corrupts the previous tile; that is a producer bug, not a condition the array recovers from.
 
 ### 7.8 requant_unit
 

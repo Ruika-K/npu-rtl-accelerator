@@ -33,7 +33,7 @@ Rules:
 | --- | --- | --- |
 | `requant_unit` | Random acc / bias / mult / shift / zero point, plus directed cases for saturation, rounding exactly at 0.5 and shift extremes | Compared one by one with the SV integer reference function; that function is in turn cross-checked against Python |
 | `pe` | Random int8 sequences with first / last flags | Accumulated value and shadow timing |
-| `systolic_array` | Random `In[M][K]`, `W[K][8]`, K from 1 to 512, M both a multiple of 8 and not | Drained columns equal the numpy matrix product; idle cycles correct for K < 8 |
+| `systolic_array` | GEMMs driven tile by tile as `conv_engine` will: M up to 64, K from 1 to 512, N up to 32, partial tiles with random garbage in unused lanes, random idle cycles anywhere, N-K idle cycles after tiles with K < N; data modes include all -128 and random extremes | Every drained element equals the SV integer matrix product (itself cross-checked against Python GEMM vectors); column order 0..N-1; `drain_valid_o` never drops mid-drain; the drain starts exactly N-1 edges after the last beat |
 | `act_buffer` | Random unaligned 8-byte reads and writes, byte enables, same-cycle read and write to different addresses | Compared with a byte-array model in SV |
 | `conv_addr_gen` | Random H / W / C_in / C_out / K / pad | Address stream, lane masks and first / last match a Python-generated sequence cycle by cycle |
 | `axil_slave` + `npu_regs` | AXI4-Lite reads and writes, W1P / W1C semantics, memory access while busy | Response codes, register values, HOST_CONFLICT |

@@ -96,6 +96,10 @@ Output sizes are computed by hardware: `OUT = IN + 2*PAD - K + 1` (CONV2D), `OUT
 7. Wait for `irq_o` or poll STATUS.DONE. Read RESULT and LOGITS; read PERF_* for performance data.
 8. Write 1 to clear STATUS.DONE. For the next image repeat steps 4, 6, 7 and 8; weights and descriptors stay resident.
 
+Do not write descriptors while STATUS.BUSY is set: the sequencer reads each descriptor word by word when its layer
+starts, so a write during a run can reach a later layer or be seen half old, half new. Reading descriptors while
+busy is fine.
+
 ## 5. Error codes
 
 | ERR_CODE | Meaning |

@@ -13,6 +13,11 @@
 //
 // CTRL.START (W1P) is ignored while busy. An accepted START pulses start_o
 // and clears DONE, ERR, ERR_CODE and RESULT.VALID.
+//
+// The sequencer reads descriptor words through desc_rd_*: a request is granted
+// in the cycle it is made unless the host reads a descriptor word in the same
+// cycle (the host has priority), and the word follows one cycle after the
+// grant. Host and sequencer share one 32-bit read mux over the table.
 module npu_regs
   import npu_pkg::*;
 (
@@ -47,7 +52,12 @@ module npu_regs
   // sequencer
   output logic                          start_o,
   output logic [4:0]                    layer_cnt_o,
-  output desc_t [NUM_DESC-1:0]          desc_o,
+  input  logic                          desc_rd_en_i,
+  input  logic [3:0]                    desc_rd_idx_i,
+  input  logic [3:0]                    desc_rd_word_i,
+  output logic                          desc_rd_gnt_o,
+  output logic                          desc_rd_valid_o,
+  output logic [31:0]                   desc_rd_data_o,
   input  logic                          busy_i,
   input  logic                          done_i,
   input  logic                          err_i,
@@ -112,28 +122,55 @@ module npu_regs
   assign layer_cnt_o = layer_cnt_q;
   assign irq_o       = done_q & irq_en_q;
 
+  // ---------------------------------------------------------------------------
+  // Descriptor word read mux, shared by host reads and sequencer fetches
+  // ---------------------------------------------------------------------------
+  // The table is viewed as NUM_DESC x 16 words (W10 .. W15 are constant 0) so
+  // that the word index is {idx, word} with a power-of-two stride; every flow
+  // then builds a plain mux. (Indexing the 10-word rows directly made sv2v +
+  // Yosys build a barrel shifter over all 5120 bits.)
+  logic [NUM_DESC*DESC_WORDS-1:0][31:0] desc_flat_c;
   always_comb begin
-    for (int i = 0; i < NUM_DESC; i++) desc_o[i] = desc_from_words(desc_words_q[i]);
+    desc_flat_c = '0;
+    for (int i = 0; i < NUM_DESC; i++) begin
+      for (int w = 0; w < DESC_USED_WORDS; w++) begin
+        desc_flat_c[i*DESC_WORDS + w] = desc_words_q[i][w];
+      end
+    end
+  end
+
+  logic       host_desc_rd_c;     // the host reads a descriptor word this cycle
+  logic [3:0] host_desc_idx_c, host_desc_word_c;
+  logic [7:0] host_desc_woff_c;
+  logic [7:0] desc_mux_sel_c;
+  logic [31:0] desc_mux_c;
+  assign host_desc_rd_c   = rd_req_i && (decode(rd_addr_i) == TGT_REG) &&
+                            (rd_addr_i[11:0] >= REG_DESC_BASE) &&
+                            (rd_addr_i[11:0] < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4));
+  assign host_desc_woff_c = 8'((rd_addr_i[11:0] - REG_DESC_BASE) >> 2);
+  assign host_desc_idx_c  = host_desc_woff_c[7:4];
+  assign host_desc_word_c = host_desc_woff_c[3:0];
+  assign desc_mux_sel_c   = host_desc_rd_c ? {host_desc_idx_c, host_desc_word_c}
+                                           : {desc_rd_idx_i, desc_rd_word_i};
+  assign desc_mux_c       = desc_flat_c[desc_mux_sel_c];
+  assign desc_rd_gnt_o    = desc_rd_en_i && !host_desc_rd_c;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      desc_rd_valid_o <= 1'b0;
+      desc_rd_data_o  <= '0;
+    end else begin
+      desc_rd_valid_o <= desc_rd_gnt_o;
+      if (desc_rd_gnt_o) desc_rd_data_o <= desc_mux_c;
+    end
   end
 
   // ---------------------------------------------------------------------------
   // Register read mux
   // ---------------------------------------------------------------------------
-  // The descriptor table and the layer counters are read through one-hot AND-OR
-  // muxes. A variable index such as desc_words_q[idx][word] means the same, but
-  // some flows (sv2v + Yosys) flatten the 2-D array and build a barrel shifter
-  // over all 5120 bits for it, at several times the area of this mux.
-  function automatic logic [31:0] desc_word_read(input logic [3:0] idx, input logic [3:0] word);
-    logic [31:0] r;
-    r = '0;
-    for (int i = 0; i < NUM_DESC; i++) begin
-      for (int w = 0; w < DESC_USED_WORDS; w++) begin
-        r |= desc_words_q[i][w] & {32{idx == 4'(i) && word == 4'(w)}};
-      end
-    end
-    return r;   // W10 .. W15 read as 0
-  endfunction
-
+  // Descriptor words come from the shared mux above (selected by the host
+  // address in the cycle of a host read). The layer counters are read through
+  // a one-hot AND-OR mux.
   function automatic logic [31:0] layer_cycles_read(input logic [3:0] idx);
     logic [31:0] r;
     r = '0;
@@ -144,14 +181,9 @@ module npu_regs
   endfunction
 
   function automatic logic [31:0] reg_read(input logic [11:0] a);
-    logic [7:0]  woff;   // word offset inside a block
     logic [3:0]  idx;
-    logic [3:0]  word;
     if (a >= REG_DESC_BASE && a < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4)) begin
-      woff = 8'((a - REG_DESC_BASE) >> 2);
-      idx  = woff[7:4];
-      word = woff[3:0];
-      return desc_word_read(idx, word);
+      return desc_mux_c;   // W10 .. W15 read as 0
     end
     if (a >= REG_LOGITS_BASE && a < REG_LOGITS_BASE + 12'(NUM_LOGITS * 4)) begin
       idx = 4'((a - REG_LOGITS_BASE) >> 2);

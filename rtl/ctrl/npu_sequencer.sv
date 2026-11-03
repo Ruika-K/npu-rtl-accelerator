@@ -3,11 +3,13 @@
 // Layer sequencer (docs/architecture.md sections 7.3, 7.4; error codes in
 // docs/programming_model.md section 5).
 //
-// On start_i it walks descriptors 0 .. layer_cnt_i-1. For each layer it first
-// validates the descriptor (all static checks live here, so the engines can
-// trust what they receive), then starts the engine for the opcode and waits
-// for its done or err. NOP layers complete without an engine. FC is forwarded
-// as CONV2D with k = 1, pad = 0, in_h = in_w = 1, stride 0.
+// On start_i it walks descriptors 0 .. layer_cnt_i-1. For each layer it
+// fetches the descriptor's DESC_USED_WORDS words from npu_regs (one request
+// per cycle on desc_rd_*, the word arrives the cycle after the grant), then
+// validates it (all static checks live here, so the engines can trust what
+// they receive), starts the engine for the opcode and waits for its done or
+// err. NOP layers complete without an engine. FC is forwarded as CONV2D with
+// k = 1, pad = 0, in_h = in_w = 1, stride 0.
 //
 // done_o and err_o are single-cycle pulses; busy_o is already low in the
 // cycle they are asserted. cur_layer_o points at the current layer, and at
@@ -16,7 +18,8 @@
 // busy cycles in which array_valid_i was high. All three clear on start.
 //
 // Check order, first hit wins: ERR_BAD_OP, ERR_BAD_PARAM, ERR_BAD_OUT_DIM,
-// ERR_BAD_ADDR. The checks are combinational on the current descriptor.
+// ERR_BAD_ADDR. The checks are combinational on the fetched (registered)
+// descriptor.
 module npu_sequencer
   import npu_pkg::*;
 (
@@ -25,7 +28,12 @@ module npu_sequencer
 
   input  logic                        start_i,
   input  logic [4:0]                  layer_cnt_i,
-  input  desc_t [NUM_DESC-1:0]        desc_i,
+  output logic                        desc_rd_en_o,
+  output logic [3:0]                  desc_rd_idx_o,
+  output logic [3:0]                  desc_rd_word_o,
+  input  logic                        desc_rd_gnt_i,
+  input  logic                        desc_rd_valid_i,
+  input  logic [31:0]                 desc_rd_data_i,
 
   output logic                        busy_o,
   output logic                        done_o,
@@ -161,7 +169,7 @@ module npu_sequencer
   // ---------------------------------------------------------------------------
   // Sequencer FSM
   // ---------------------------------------------------------------------------
-  typedef enum logic [1:0] {S_IDLE, S_CHECK, S_RUN, S_NEXT} state_e;
+  typedef enum logic [2:0] {S_IDLE, S_FETCH, S_CHECK, S_RUN, S_NEXT} state_e;
 
   state_e      state_q;
   logic        busy_q;
@@ -175,18 +183,22 @@ module npu_sequencer
   err_e  eng_err_code_c;
   logic  start_ok_c;
 
-  // One-hot AND-OR select of the current descriptor. A plain desc_i[cur_q]
-  // means the same thing, but some flows (sv2v + Yosys) flatten the array and
-  // build a barrel shifter for a variable index whose stride is not a power of
-  // two, at roughly ten times the area of this mux.
-  always_comb begin
-    logic [$bits(desc_t)-1:0] sel;
-    sel = '0;
-    for (int i = 0; i < NUM_DESC; i++) begin
-      sel |= desc_i[i] & {$bits(desc_t){cur_q == 4'(i)}};
-    end
-    cur_desc_c = desc_t'(sel);
-  end
+  // Descriptor fetch: words are requested in order 0 .. DESC_USED_WORDS-1 and
+  // shifted in from the top as they arrive, so after the last one word w sits
+  // at index w. Fetching through the register file's 32-bit read port replaces
+  // a combinational select of a whole descriptor out of the table, the largest
+  // mux in the design, and registers the input of the checks below.
+  localparam int unsigned WCNT_W = $clog2(DESC_USED_WORDS + 1);
+  desc_words_t       cur_words_q;
+  logic [WCNT_W-1:0] fetch_req_q, fetch_rcv_q;   // words requested / received
+  logic              fetch_last_c;
+
+  assign desc_rd_en_o   = (state_q == S_FETCH) && (fetch_req_q < WCNT_W'(DESC_USED_WORDS));
+  assign desc_rd_idx_o  = cur_q;
+  assign desc_rd_word_o = 4'(fetch_req_q);
+  assign fetch_last_c   = desc_rd_valid_i && (fetch_rcv_q == WCNT_W'(DESC_USED_WORDS - 1));
+  assign cur_desc_c     = desc_from_words(cur_words_q);
+
   assign check_c = check_desc(cur_desc_c);
   assign start_ok_c = start_i && (state_q == S_IDLE) && (layer_cnt_i != 5'd0) && (layer_cnt_i <= 5'(NUM_DESC));
 
@@ -218,6 +230,9 @@ module npu_sequencer
       err_o          <= 1'b0;
       err_code_o     <= ERR_NONE;
       eng_desc_o     <= '0;
+      cur_words_q    <= '0;
+      fetch_req_q    <= '0;
+      fetch_rcv_q    <= '0;
       conv_start_o   <= 1'b0;
       pool_start_o   <= 1'b0;
       argmax_start_o <= 1'b0;
@@ -239,9 +254,20 @@ module npu_sequencer
               cur_q      <= '0;
               cnt_q      <= layer_cnt_i;
               err_code_o <= ERR_NONE;
-              state_q    <= S_CHECK;
+              fetch_req_q <= '0;
+              fetch_rcv_q <= '0;
+              state_q    <= S_FETCH;
             end
           end
+        end
+
+        S_FETCH: begin
+          if (desc_rd_en_o && desc_rd_gnt_i) fetch_req_q <= fetch_req_q + WCNT_W'(1);
+          if (desc_rd_valid_i) begin
+            cur_words_q <= {desc_rd_data_i, cur_words_q[DESC_USED_WORDS-1:1]};
+            fetch_rcv_q <= fetch_rcv_q + WCNT_W'(1);
+          end
+          if (fetch_last_c) state_q <= S_CHECK;
         end
 
         S_CHECK: begin
@@ -281,8 +307,10 @@ module npu_sequencer
             done_o  <= 1'b1;
             state_q <= S_IDLE;
           end else begin
-            cur_q   <= cur_q + 4'd1;
-            state_q <= S_CHECK;
+            cur_q       <= cur_q + 4'd1;
+            fetch_req_q <= '0;
+            fetch_rcv_q <= '0;
+            state_q     <= S_FETCH;
           end
         end
 

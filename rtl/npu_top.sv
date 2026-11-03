@@ -97,7 +97,9 @@ module npu_top
 
   logic        start, busy, done, err;
   logic [4:0]  layer_cnt;
-  desc_t [NUM_DESC-1:0] desc;
+  logic        desc_rd_en, desc_rd_gnt, desc_rd_valid;   // sequencer descriptor fetch
+  logic [3:0]  desc_rd_idx, desc_rd_word;
+  logic [31:0] desc_rd_data;
   err_e        err_code;
   logic [3:0]  cur_layer;
   logic [NUM_DESC-1:0][31:0] layer_cycles;
@@ -116,7 +118,9 @@ module npu_top
       .rd_req_i (rd_req), .rd_addr_i (rd_addr), .rd_ack_o (rd_ack), .rd_data_o (rd_data), .rd_err_o (rd_err),
       .hm_req_o (hm_req), .hm_we_o (hm_we), .hm_sel_o (hm_sel), .hm_addr_o (hm_addr), .hm_wdata_o (hm_wdata), .hm_be_o (hm_be),
       .hm_ack_i (hm_ack), .hm_rdata_i (hm_rdata),
-      .start_o (start), .layer_cnt_o (layer_cnt), .desc_o (desc),
+      .start_o (start), .layer_cnt_o (layer_cnt),
+      .desc_rd_en_i (desc_rd_en), .desc_rd_idx_i (desc_rd_idx), .desc_rd_word_i (desc_rd_word),
+      .desc_rd_gnt_o (desc_rd_gnt), .desc_rd_valid_o (desc_rd_valid), .desc_rd_data_o (desc_rd_data),
       .busy_i (busy), .done_i (done), .err_i (err), .err_code_i (err_code), .cur_layer_i (cur_layer),
       .layer_cycles_i (layer_cycles), .total_cycles_i (total_cycles), .array_busy_cycles_i (array_busy_cycles),
       .dma_start_o (dma_start), .dma_dir_o (dma_dir), .dma_dst_sel_o (dma_dst_sel), .dma_src_o (dma_src),
@@ -136,7 +140,9 @@ module npu_top
 
   npu_sequencer u_seq (
       .clk_i (clk_i), .rst_ni (rst_ni),
-      .start_i (start), .layer_cnt_i (layer_cnt), .desc_i (desc),
+      .start_i (start), .layer_cnt_i (layer_cnt),
+      .desc_rd_en_o (desc_rd_en), .desc_rd_idx_o (desc_rd_idx), .desc_rd_word_o (desc_rd_word),
+      .desc_rd_gnt_i (desc_rd_gnt), .desc_rd_valid_i (desc_rd_valid), .desc_rd_data_i (desc_rd_data),
       .busy_o (busy), .done_o (done), .err_o (err), .err_code_o (err_code), .cur_layer_o (cur_layer),
       .layer_cycles_o (layer_cycles), .total_cycles_o (total_cycles), .array_busy_cycles_o (array_busy_cycles),
       .array_valid_i (array_valid),

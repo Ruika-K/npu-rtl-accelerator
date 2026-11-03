@@ -78,15 +78,15 @@ One image through the 8-layer program, read from the performance counters (`make
 
 | Layer | Shape | Cycles | Useful MACs | Note |
 | --- | --- | --- | --- | --- |
-| conv1 5x5, 1->6, pad 2 | 28x28x1 -> 28x28x6 | 2835 | 117.6K | 6 of 8 columns used, last column tile 4 of 8 lanes |
-| pool1 | -> 14x14x6 | 1350 | - | sequential FSM |
-| conv2 5x5, 6->16 | -> 10x10x16 | 6041 | 240K | 10 of 16 lanes in the last column tile |
-| pool2 | -> 5x5x16 | 646 | - | |
-| fc1 400->120 | | 6119 | 48K | weight-bandwidth bound: 1 of 8 rows |
-| fc2 120->84 | | 1415 | 10.1K | |
-| fc3 84->10 | | 209 | 0.8K | |
-| argmax | | 20 | - | |
-| **Total** | | **18635** | **416.5K** | array busy 16288 cycles; 35% of the 64 MAC/cycle peak |
+| conv1 5x5, 1->6, pad 2 | 28x28x1 -> 28x28x6 | 2846 | 117.6K | 6 of 8 columns used, last column tile 4 of 8 lanes |
+| pool1 | -> 14x14x6 | 1361 | - | sequential FSM |
+| conv2 5x5, 6->16 | -> 10x10x16 | 6052 | 240K | 10 of 16 lanes in the last column tile |
+| pool2 | -> 5x5x16 | 657 | - | |
+| fc1 400->120 | | 6130 | 48K | weight-bandwidth bound: 1 of 8 rows |
+| fc2 120->84 | | 1426 | 10.1K | |
+| fc3 84->10 | | 220 | 0.8K | |
+| argmax | | 31 | - | |
+| **Total** | | **18723** | **416.5K** | array busy 16288 cycles; 35% of the 64 MAC/cycle peak |
 
 All 100 test images in `model/data/mnist/program.txt` give the same class as the integer model (99 of 100 match the
 label); the first two images are also checked layer by layer, byte for byte. The float32 model scores 97.9% and

@@ -265,10 +265,10 @@ structural and worth understanding: C_out = 6 uses only 6 of 8 columns; with W_o
 4 lanes; FC has a single output pixel, uses 1 of 8 rows, and is bound by weight bandwidth (8 bytes of weights per
 cycle support at most 8 MACs). The perf counters record per-layer cycles and array-active cycles.
 
-Measured (M5, `make integ-mnist`, first image): conv1 2835, pool1 1350, conv2 6041, pool2 646, fc1 6119,
-fc2 1415, fc3 209, argmax 20, total 18635 cycles with the array busy for 16288; the differences to the estimate are
-the bias prefetch per n_tile, the pipeline fill and flush per layer, and the sequential pool engine. Utilization
-is 35% of peak. See the README for the table.
+Measured (`make integ-mnist`, first image): conv1 2846, pool1 1361, conv2 6052, pool2 657, fc1 6130,
+fc2 1426, fc3 220, argmax 31, total 18723 cycles with the array busy for 16288; the differences to the estimate are
+the bias prefetch per n_tile, the pipeline fill and flush per layer, the sequential pool engine and the 11-cycle
+descriptor fetch per layer (M6, section 7.3). Utilization is 35% of peak. See the README for the table.
 
 ## 6. pool_engine and argmax_engine
 
@@ -323,10 +323,18 @@ ignored and only the low 20 address bits are decoded.
 | Signal | Description |
 | --- | --- |
 | `start_i` (pulse), `layer_cnt_i[4:0]` | Produced by CTRL.START; `npu_regs` already suppresses START while busy |
-| `desc_i[NUM_DESC]` (array of `desc_t`) | Read-only view of the descriptor table, decoded from the stored words |
+| `desc_rd_en_o`, `desc_rd_idx_o[3:0]`, `desc_rd_word_o[3:0]` | Sequencer request for one descriptor word |
+| `desc_rd_gnt_i` | Request accepted this cycle; low only when the host reads a descriptor word in the same cycle |
+| `desc_rd_valid_i`, `desc_rd_data_i[31:0]` | The word, one cycle after the grant |
 | `busy_o`, `done_o` (pulse), `err_o` (pulse), `err_code_o`, `cur_layer_o[3:0]` | Status; busy is already low in the cycle done or err pulses |
 | `layer_cycles_o[NUM_DESC][31:0]`, `total_cycles_o[31:0]`, `array_busy_cycles_o[31:0]` | Perf counters, cleared on an accepted start; `array_busy_cycles_o` counts busy cycles with `array_valid_i` high |
 | `array_valid_i` | The systolic array's `in_valid`, from conv_engine |
+
+The sequencer fetches the current descriptor's ten words in order (about 11 cycles per layer) into a local
+register and runs the checks on that register. Host reads and sequencer fetches share one 32-bit read mux over
+the table, with the host first. Until M6 the sequencer selected a whole decoded descriptor combinationally out of
+the table; synthesis showed that 16:1 select of a ~300-bit struct was the largest mux in the design, see
+ADR-016 and `docs/synthesis.md`.
 
 `npu_regs` also receives the argmax result (`argmax_valid_i`, `argmax_idx_i[3:0]`, `argmax_logits_i[16][7:0]`)
 and drives `irq_o = DONE & IRQ_EN`.

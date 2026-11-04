@@ -8,6 +8,11 @@
 // and writes N output bytes with a lane mask for the end of the row. Output
 // size rounds down. Descriptor fields are trusted (validated by the
 // sequencer). Reads past the end of a row only feed masked lanes.
+//
+// The write port is driven from registers: the maxima, the lane mask and the
+// address are captured in the S_WAIT cycle after the fourth read word has
+// arrived (there always is one), so S_WRITE costs no extra cycle and no
+// compare sits between this engine and the buffer's write path.
 module pool_engine
   import npu_pkg::*;
 #(
@@ -80,10 +85,14 @@ module pool_engine
     for (int i = 0; i < N; i++) be_c[i] = (ow0_q + 16'(i)) < ow_q;
   end
 
+  logic [N-1:0][7:0]  wr_data_q;
+  logic [N-1:0]       wr_be_q;
+  logic [ABUF_AW-1:0] wr_addr_q;
+
   assign abuf_wr_en_o   = (state_q == S_WRITE);
-  assign abuf_wr_addr_o = out_row_q + ow0_q[ABUF_AW-1:0];
-  assign abuf_wr_data_o = out_c;
-  assign abuf_wr_be_o   = be_c;
+  assign abuf_wr_addr_o = wr_addr_q;
+  assign abuf_wr_data_o = wr_data_q;
+  assign abuf_wr_be_o   = wr_be_q;
 
   // The sequencer consumed the other descriptor fields.
   /* verilator lint_off UNUSEDSIGNAL */
@@ -100,9 +109,17 @@ module pool_engine
       in_base_q <= '0; out_base_q <= '0;
       c_i_q <= '0; r_q <= '0; ow0_q <= '0; in_ch_q <= '0; out_ch_q <= '0; in_row_q <= '0; out_row_q <= '0;
       issue_q <= '0; got_q <= '0; row0_q <= '0; row1_q <= '0;
+      wr_data_q <= '0; wr_be_q <= '0; wr_addr_q <= '0;
       done_o <= 1'b0;
     end else begin
       done_o <= 1'b0;
+
+      // write-port registers, loaded while all four words are held
+      if (state_q == S_WAIT && got_q == 3'd4) begin
+        wr_data_q <= out_c;
+        wr_be_q   <= be_c;
+        wr_addr_q <= out_row_q + ow0_q[ABUF_AW-1:0];
+      end
 
       // collect read data in order
       if (abuf_rd_valid_i && (state_q == S_ISSUE || state_q == S_WAIT)) begin

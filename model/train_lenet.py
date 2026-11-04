@@ -11,14 +11,22 @@ Network (docs/programming_model.md section 6):
 Inputs are pixel / 255 with no further normalization, so that the integer
 input is pixel - 128 with scale 1/255 and zero point -128.
 
-Datasets: MNIST is fetched as mnist.npz from the Keras mirror; CIFAR-10 is
-fetched as cifar-10-python.tar.gz from the University of Toronto, or taken from
---data if already present (download it by hand if the network is restricted).
+Datasets: MNIST is fetched as mnist.npz from the Keras mirror. CIFAR-10 is read
+from --data (default model/out/datasets) as either archive, whichever is present:
+  cifar-10-python.tar.gz  the original release (University of Toronto), or
+  cifar10.tgz             the fast.ai mirror on S3: the same 50000 / 10000 split as
+                          one PNG per image (decoding needs Pillow).
+If neither is present both URLs are tried in that order. The fast.ai archive does
+not keep the original image order, so its test set is put in a fixed interleaved
+order (image k of class c at position 10 * k + c): every prefix of 10 images holds
+one image per class, and the committed program's 100 test images are 10 per class.
 """
 import argparse
+import io
 import os
 import pickle
 import tarfile
+import urllib.error
 import urllib.request
 
 import numpy as np
@@ -26,6 +34,9 @@ import numpy as np
 NETS = {"mnist": (1, 28, 2), "cifar10": (3, 32, 0)}   # cin, size, conv1 pad
 MNIST_URL = "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz"
 CIFAR_URL = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
+CIFAR_FASTAI_URL = "https://s3.amazonaws.com/fast-ai-imageclas/cifar10.tgz"
+CIFAR_CLASSES = ("airplane", "automobile", "bird", "cat", "deer",
+                 "dog", "frog", "horse", "ship", "truck")    # label order of the original release
 
 
 # ---------------------------------------------------------------------------
@@ -41,10 +52,26 @@ def load_mnist(data_dir):
 
 
 def load_cifar10(data_dir):
-    path = os.path.join(data_dir, "cifar-10-python.tar.gz")
-    if not os.path.exists(path):
-        print("downloading", CIFAR_URL)
-        urllib.request.urlretrieve(CIFAR_URL, path)
+    toronto = os.path.join(data_dir, "cifar-10-python.tar.gz")
+    fastai = os.path.join(data_dir, "cifar10.tgz")
+    if not os.path.exists(toronto) and not os.path.exists(fastai):
+        for url, path in ((CIFAR_URL, toronto), (CIFAR_FASTAI_URL, fastai)):
+            try:
+                print("downloading", url)
+                urllib.request.urlretrieve(url, path)
+                break
+            except (urllib.error.URLError, OSError) as e:
+                print("  failed:", e)
+                if os.path.exists(path):
+                    os.remove(path)
+        else:
+            raise SystemExit("CIFAR-10: no archive in %s and no download worked" % data_dir)
+    if os.path.exists(toronto):
+        return load_cifar10_toronto(toronto)
+    return load_cifar10_fastai(fastai)
+
+
+def load_cifar10_toronto(path):
     xs, ys, xt, yt = [], [], None, None
     with tarfile.open(path) as tf:
         for m in tf.getmembers():
@@ -58,6 +85,35 @@ def load_cifar10(data_dir):
                 else:
                     xs.append(x); ys.append(y)
     return np.concatenate(xs), np.concatenate(ys), xt, yt
+
+
+def load_cifar10_fastai(path):
+    """<split>/<class>/<index>.png -> arrays; members are read in memory, never extracted."""
+    from PIL import Image   # only this source needs it
+
+    items = {"train": [], "test": []}
+    with tarfile.open(path) as tf:
+        for m in tf:
+            parts = m.name.split("/")
+            if not m.isfile() or not m.name.endswith(".png") or len(parts) < 3:
+                continue
+            split, cls = parts[-3], parts[-2]
+            if split not in items or cls not in CIFAR_CLASSES:
+                continue
+            idx = int(os.path.splitext(parts[-1])[0])
+            with Image.open(io.BytesIO(tf.extractfile(m).read())) as im:
+                if im.size != (32, 32):
+                    raise SystemExit("CIFAR-10: unexpected image size %s in %s" % (im.size, m.name))
+                x = np.asarray(im.convert("RGB"), dtype=np.uint8).transpose(2, 0, 1)
+            items[split].append((idx, CIFAR_CLASSES.index(cls), x))
+    out = []
+    for split, expect in (("train", 50000), ("test", 10000)):
+        rows = sorted(items[split], key=lambda r: (r[0], r[1]))   # image k of class c at 10 * k + c
+        if len(rows) != expect:
+            raise SystemExit("CIFAR-10: %d %s images, expected %d" % (len(rows), split, expect))
+        out.append(np.stack([r[2] for r in rows]))
+        out.append(np.array([r[1] for r in rows], dtype=np.int64))
+    return out[0], out[1], out[2], out[3]
 
 
 # ---------------------------------------------------------------------------

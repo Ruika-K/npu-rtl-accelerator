@@ -2,9 +2,10 @@
 
 // Requantization unit: one int32 accumulator value -> one int8 activation.
 //
-// Implements docs/architecture.md section 3.3 as a fixed 4-stage pipeline:
+// Implements docs/architecture.md section 3.3 as a fixed 5-stage pipeline:
 //   S1  sum     = acc + bias                                   (33-bit signed)
-//   S2  prod    = sum * mult                                   (65-bit signed)
+//   S2a lo      = sum * mult[15:0], hi = sum * mult[31:16]     (two halves)
+//   S2b prod    = hi * 2^16 + lo  ( = sum * mult)              (65-bit signed)
 //   S3  k       = sat(prod >>> (shift-1))                      (14-bit signed)
 //   S4  rounded = (k + 1) >>> 1, i.e. (prod + 2^(shift-1)) >>> shift (round half up)
 //       q       = clamp(rounded + z_out, act_min, act_max)     (int8)
@@ -83,11 +84,53 @@ module requant_unit
   end
 
   // ---------------------------------------------------------------------------
-  // Stage 2: fixed-point multiply
+  // Stage 2a: the product in two halves. mult = mult[31:16] * 2^16 + mult[15:0]
+  // with the high half signed and the low half unsigned, so each half is a
+  // 33 x 16-bit product and stage 2b only adds them.
+  // ---------------------------------------------------------------------------
+  localparam int unsigned PLO_W = SUM_W + 17;    // sum * mult[15:0]
+  localparam int unsigned PHI_W = SUM_W + 16;    // sum * mult[31:16]
+  logic signed [PLO_W-1:0] plo_c;
+  logic signed [PHI_W-1:0] phi_c;
+  assign plo_c = $signed({{17{s1_sum_q[SUM_W-1]}}, s1_sum_q})
+               * $signed({{(PLO_W-16){1'b0}}, s1_mult_q[15:0]});
+  assign phi_c = $signed({{16{s1_sum_q[SUM_W-1]}}, s1_sum_q})
+               * $signed({{SUM_W{s1_mult_q[ACC_W-1]}}, s1_mult_q[ACC_W-1:16]});
+
+  logic                      s2a_valid_q;
+  logic signed [PLO_W-1:0]   s2a_lo_q;
+  logic signed [PHI_W-1:0]   s2a_hi_q;
+  logic [RQ_SHIFT_W-1:0]     s2a_shift_q;
+  logic signed [ACT_W-1:0]   s2a_z_q, s2a_min_q, s2a_max_q;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      s2a_valid_q <= 1'b0;
+      s2a_lo_q    <= '0;
+      s2a_hi_q    <= '0;
+      s2a_shift_q <= '0;
+      s2a_z_q     <= '0;
+      s2a_min_q   <= '0;
+      s2a_max_q   <= '0;
+    end else begin
+      s2a_valid_q <= s1_valid_q;
+      if (s1_valid_q) begin
+        s2a_lo_q    <= plo_c;
+        s2a_hi_q    <= phi_c;
+        s2a_shift_q <= s1_shift_q;
+        s2a_z_q     <= s1_z_q;
+        s2a_min_q   <= s1_min_q;
+        s2a_max_q   <= s1_max_q;
+      end
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // Stage 2b: prod = hi * 2^16 + lo
   // ---------------------------------------------------------------------------
   logic signed [MUL_W-1:0] prod_c;
-  assign prod_c = $signed({{ACC_W{s1_sum_q[SUM_W-1]}}, s1_sum_q})
-                * $signed({{SUM_W{s1_mult_q[ACC_W-1]}}, s1_mult_q});
+  assign prod_c = $signed({s2a_hi_q, 16'h0000})
+                + $signed({{(MUL_W-PLO_W){s2a_lo_q[PLO_W-1]}}, s2a_lo_q});
 
   logic                      s2_valid_q;
   logic signed [MUL_W-1:0]  s2_prod_q;
@@ -103,13 +146,13 @@ module requant_unit
       s2_min_q   <= '0;
       s2_max_q   <= '0;
     end else begin
-      s2_valid_q <= s1_valid_q;
-      if (s1_valid_q) begin
+      s2_valid_q <= s2a_valid_q;
+      if (s2a_valid_q) begin
         s2_prod_q  <= prod_c;
-        s2_shift_q <= s1_shift_q;
-        s2_z_q     <= s1_z_q;
-        s2_min_q   <= s1_min_q;
-        s2_max_q   <= s1_max_q;
+        s2_shift_q <= s2a_shift_q;
+        s2_z_q     <= s2a_z_q;
+        s2_min_q   <= s2a_min_q;
+        s2_max_q   <= s2a_max_q;
       end
     end
   end

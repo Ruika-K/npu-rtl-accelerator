@@ -275,7 +275,9 @@ descriptor fetch and check, 14 cycles per layer (M6, section 7.3). Utilization i
 - `pool_engine`: for each channel, each output row and each group of 8 output columns, reads input rows 2r and 2r+1,
   16 bytes each (two 8-byte reads), produces 8 outputs with signed compares and does one 8-byte write with a lane
   mask at the end of the row. Output size rounds down, as PyTorch does by default. Reads past the end of a row only
-  feed masked lanes. About 7 cycles per 8 outputs; the engine is a small sequential FSM, not pipelined.
+  feed masked lanes. About 7 cycles per 8 outputs; the engine is a small sequential FSM, not pipelined. The
+  maxima, lane mask and address are registered in the wait cycle after the last read word, so the write port is
+  driven from registers at no cycle cost.
 - `argmax_engine`: reads `c_in` int8 values (v1 limit c_in <= 16) from `in_base` with two 8-byte reads, scans them
   sequentially with signed compares (ties to the lowest index), and reports the index and the 16 logits (lanes
   beyond `c_in` as 0) to the register file with a single-cycle valid. Nothing is written to memory.
@@ -384,11 +386,12 @@ restarts the drain and corrupts the previous tile; that is a producer bug, not a
 ### 7.8 requant_unit
 
 Inputs `acc_i[31:0]`, `bias_i[31:0]`, `mult_i[31:0]`, `shift_i[5:0]`, `z_out_i[7:0]`, `act_min_i[7:0]`,
-`act_max_i[7:0]`, `valid_i`; outputs `q_o[7:0]`, `valid_o`. Fixed 4-stage pipeline (`RQ_PIPE_LAT`) split along
-the formula in section 3.3: S1 does the 33-bit bias add, S2 the 33 x 32 signed multiply, S3 the shift by shift-1
-with saturation to 14 bits, S4 the final rounding step, zero-point add and clamp (exactly equal to the formula;
-the argument is in the module header). `valid_o` is exactly `valid_i` delayed by 4 cycles; data registers only
-toggle when valid. Until M6 S3 and S4 were one stage; the routed ECP5 build showed it as the critical path.
+`act_max_i[7:0]`, `valid_i`; outputs `q_o[7:0]`, `valid_o`. Fixed 5-stage pipeline (`RQ_PIPE_LAT`) split along
+the formula in section 3.3: S1 does the 33-bit bias add, S2a the two 33 x 16-bit halves of the multiply, S2b
+their sum, S3 the shift by shift-1 with saturation to 14 bits, S4 the final rounding step, zero-point add and
+clamp (exactly equal to the formula; the argument is in the module header). `valid_o` is exactly `valid_i`
+delayed by 5 cycles; data registers only toggle when valid. The extra stages came from routed ECP5 builds that
+showed the one-cycle multiply and the one-cycle tail as critical paths.
 
 ### 7.9 pe
 

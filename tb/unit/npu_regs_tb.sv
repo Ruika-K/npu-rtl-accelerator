@@ -323,6 +323,15 @@ module npu_regs_tb
     for (int i = 0; i < NUM_DESC; i++) rd_expect(A_PLAYER + 20'(4 * i), 32'd100 + 32'(i), 2'b00, "PERF_LAYER");
 
     // ---- descriptor table ----
+    // never-written words read as 0; the first write to a word clears the bytes
+    // it does not strobe, later writes keep them; W10 .. W15 are not stored
+    for (int i = 0; i < NUM_DESC; i++) rd_expect(desc_addr(i, i % DESC_USED_WORDS), 32'h0, 2'b00, "DESC never written");
+    wr(desc_addr(4, 5), 32'hDEAD_BEEF, 4'b0010);
+    rd_expect(desc_addr(4, 5), 32'h0000_BE00, 2'b00, "DESC first write with a byte strobe");
+    wr(desc_addr(4, 5), 32'h1122_3344, 4'b1000);
+    rd_expect(desc_addr(4, 5), 32'h1100_BE00, 2'b00, "DESC second write keeps the other bytes");
+    wr(desc_addr(4, 12), 32'hFFFF_FFFF);
+    rd_expect(desc_addr(4, 12), 32'h0, 2'b00, "DESC W12 is not stored");
     for (int i = 0; i < NUM_DESC; i++)
       for (int k = 0; k < 16; k++) begin
         v = $urandom();
@@ -433,6 +442,16 @@ module npu_regs_tb
         end
       endcase
     end
+
+    // a second reset clears the table although the RAM keeps its contents
+    @(negedge clk_i);
+    rst_ni = 1'b0;
+    repeat (4) @(negedge clk_i);
+    rst_ni = 1'b1;
+    repeat (2) @(negedge clk_i);
+    for (int i = 0; i < NUM_DESC; i++) rd_expect(desc_addr(i, 3), 32'h0, 2'b00, "DESC reads 0 after a second reset");
+    wr(desc_addr(2, 3), 32'h0000_0077, 4'b0001);   // the RAM still holds the old word here
+    rd_expect(desc_addr(2, 3), 32'h0000_0077, 2'b00, "DESC first write after reset clears the old bytes");
 
     if (n_errors == 0) begin
       $display("PASS: npu_regs_tb checked=%0d", n_checked);

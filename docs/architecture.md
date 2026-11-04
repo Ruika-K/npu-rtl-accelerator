@@ -275,7 +275,9 @@ descriptor fetch and check, 14 cycles per layer (M6, section 7.3). Utilization i
 - `pool_engine`: for each channel, each output row and each group of 8 output columns, reads input rows 2r and 2r+1,
   16 bytes each (two 8-byte reads), produces 8 outputs with signed compares and does one 8-byte write with a lane
   mask at the end of the row. Output size rounds down, as PyTorch does by default. Reads past the end of a row only
-  feed masked lanes. About 7 cycles per 8 outputs; the engine is a small sequential FSM, not pipelined.
+  feed masked lanes. About 7 cycles per 8 outputs; the engine is a small sequential FSM, not pipelined. The
+  maxima, lane mask and address are registered in the wait cycle after the last read word, so the write port is
+  driven from registers at no cycle cost.
 - `argmax_engine`: reads `c_in` int8 values (v1 limit c_in <= 16) from `in_base` with two 8-byte reads, scans them
   sequentially with signed compares (ties to the lowest index), and reports the index and the 16 logits (lanes
   beyond `c_in` as 0) to the register file with a single-cycle valid. Nothing is written to memory.

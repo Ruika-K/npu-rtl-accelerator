@@ -109,7 +109,8 @@ module conv_engine
   // Tile description pushed to the queue at tile start
   logic [ABUF_AW-1:0] g_col_base_q;   // address of column 0 of the tile's first channel
   logic [N-1:0]      g_ow_mask_q;     // lanes inside the output row
-  logic [12:0]       g_nt_q;
+  logic              g_bank_q;        // bias bank of the n_tile (nt[0])
+  logic [N-1:0]      g_cmask_q;       // columns of the n_tile whose output channel exists
 
   // ---------------------------------------------------------------------------
   // Setup arithmetic (combinational on the registered parameters)
@@ -138,6 +139,14 @@ module conv_engine
       ow_mask_c[i] = (ow0_c + 17'(i)) < ow_q;
       mask_c[i]    = row_ok_c && (iw >= 18'sd0) && (iw < 18'(w_q)) && ow_mask_c[i];
     end
+  end
+
+  // Output channels of the current n_tile that exist (nt*N + j < C_out). Kept
+  // in the tile queue so that the drain side selects one bit instead of
+  // adding and comparing channel numbers.
+  logic [N-1:0] cmask_c;
+  always_comb begin
+    for (int j = 0; j < N; j++) cmask_c[j] = ((32'(nt_q) << LANE_W) + 32'(j)) < 32'(cout_q);
   end
 
   // Column base of the tile: out_base + (nt*N)*OHW + oh*OW + ow0, from the
@@ -186,7 +195,8 @@ module conv_engine
       pad_w_q <= '0; w_nt_q <= '0; w_ptr_q <= '0; col_nt_q <= '0; col_row_q <= '0;
       bias_q <= '0; pf_rd_q <= 1'b0; pf_rd_idx_q <= '0;
       g_active_q <= 1'b0; g_first_q <= 1'b0; g_last_q <= 1'b0; g_tile_start_q <= 1'b0;
-      g_addr_q <= '0; g_waddr_q <= '0; g_mask_q <= '0; g_col_base_q <= '0; g_ow_mask_q <= '0; g_nt_q <= '0;
+      g_addr_q <= '0; g_waddr_q <= '0; g_mask_q <= '0; g_col_base_q <= '0; g_ow_mask_q <= '0;
+      g_bank_q <= 1'b0; g_cmask_q <= '0;
       done_o <= 1'b0;
     end else begin
       done_o         <= 1'b0;
@@ -269,7 +279,8 @@ module conv_engine
           g_mask_q       <= mask_c;
           g_col_base_q   <= col_base_c;
           g_ow_mask_q    <= ow_mask_c;
-          g_nt_q         <= nt_q;
+          g_bank_q       <= nt_q[0];
+          g_cmask_q      <= cmask_c;
 
           // advance the (ci, kh, kw) walk on active beats
           if (active_c) begin
@@ -417,7 +428,8 @@ module conv_engine
   typedef struct packed {
     logic [ABUF_AW-1:0] col_base;
     logic [N-1:0]       ow_mask;
-    logic [12:0]        nt;
+    logic [N-1:0]       cmask;
+    logic               bank;
   } tile_t;
   tile_t [TQ_DEPTH-1:0] tq_q;
   logic [1:0] tq_wr_q, tq_rd_q;
@@ -425,7 +437,8 @@ module conv_engine
   // Drain-side registers for the tile being drained
   logic [ABUF_AW-1:0] dr_col_addr_q;    // address of the column being requantized
   logic [N-1:0]       dr_ow_mask_q;
-  logic [12:0]        dr_nt_q;
+  logic [N-1:0]       dr_cmask_q;
+  logic               dr_bank_q;
   logic               drain_start_c;
   assign drain_start_c = drain_valid && (drain_idx == '0);
 
@@ -435,16 +448,17 @@ module conv_engine
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       tq_q <= '0; tq_wr_q <= '0; tq_rd_q <= '0;
-      dr_col_addr_q <= '0; dr_ow_mask_q <= '0; dr_nt_q <= '0;
+      dr_col_addr_q <= '0; dr_ow_mask_q <= '0; dr_cmask_q <= '0; dr_bank_q <= 1'b0;
     end else begin
       if (g_tile_start_q) begin
-        tq_q[tq_wr_q] <= '{col_base: g_col_base_q, ow_mask: g_ow_mask_q, nt: g_nt_q};
+        tq_q[tq_wr_q] <= '{col_base: g_col_base_q, ow_mask: g_ow_mask_q, cmask: g_cmask_q, bank: g_bank_q};
         tq_wr_q <= tq_wr_q + 2'd1;
       end
       if (drain_start_c) begin
         dr_col_addr_q <= tq_head_c.col_base + ohw_q[ABUF_AW-1:0];   // address of column 1
         dr_ow_mask_q  <= tq_head_c.ow_mask;
-        dr_nt_q       <= tq_head_c.nt;
+        dr_cmask_q    <= tq_head_c.cmask;
+        dr_bank_q     <= tq_head_c.bank;
         tq_rd_q       <= tq_rd_q + 2'd1;
       end else if (drain_valid) begin
         dr_col_addr_q <= dr_col_addr_q + ohw_q[ABUF_AW-1:0];
@@ -456,14 +470,14 @@ module conv_engine
   // the running registers afterwards.
   logic [ABUF_AW-1:0] col_addr_c;
   logic [N-1:0]       col_ow_mask_c;
-  logic [12:0]        col_nt_c;
-  logic [15:0]        col_n_c;           // output channel index
+  logic [N-1:0]       col_cmask_c;
+  logic               col_bank_c;
   logic               col_wr_c;          // channel exists
   assign col_addr_c    = drain_start_c ? tq_head_c.col_base : dr_col_addr_q;
   assign col_ow_mask_c = drain_start_c ? tq_head_c.ow_mask  : dr_ow_mask_q;
-  assign col_nt_c      = drain_start_c ? tq_head_c.nt       : dr_nt_q;
-  assign col_n_c       = 16'((32'(col_nt_c) << LANE_W) + 32'(drain_idx));
-  assign col_wr_c      = drain_valid && (col_n_c < cout_q);
+  assign col_cmask_c   = drain_start_c ? tq_head_c.cmask    : dr_cmask_q;
+  assign col_bank_c    = drain_start_c ? tq_head_c.bank     : dr_bank_q;
+  assign col_wr_c      = drain_valid && col_cmask_c[drain_idx];
 
   // ---------------------------------------------------------------------------
   // Requantization, N lanes, and the write-back delay line
@@ -477,7 +491,7 @@ module conv_engine
         .rst_ni    (rst_ni),
         .valid_i   (drain_valid),
         .acc_i     (drain_data[i]),
-        .bias_i    (bias_q[col_nt_c[0]][drain_idx]),
+        .bias_i    (bias_q[col_bank_c][drain_idx]),
         .mult_i    (rq_mult_q),
         .shift_i   (rq_shift_q),
         .z_out_i   (z_out_q),

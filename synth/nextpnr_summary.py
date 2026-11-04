@@ -73,7 +73,7 @@ def main():
             net = m.group(3)
             # a net that kept its RTL name is a better label than an ABC cell name
             if not net.startswith("$") and "$abc$" not in net:
-                steps[-1][0] = "%s: %s" % signal_of(net.split("[")[0])
+                steps[-1][0] = "%s: %s" % signal_of(re.sub(r"\[\d+\]$", "", net.split("$")[0]))   # drop a bit index only
             steps[-1][1] = float(m.group(2))
             continue
         m = re.match(r"^\s*([\d.]+)\s+([\d.]+)\s+Setup\s+(\S+)", l)

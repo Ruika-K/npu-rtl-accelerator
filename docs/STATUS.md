@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M6 complete on `feat/m6-synthesis`, waiting for review: the open-source synthesis flow reports area per module on every push and places and routes the core on the ECP5-85k (`docs/synthesis.md`); the first report drove a round of RTL changes (ADR-016) that cut the logic by more than half; `chip_top` and the AXI4 master DMA are done and verified. CIFAR-10 still waits for its dataset.
+M6 merged. M5's second network is complete on `feat/m5-cifar10`: CIFAR-10 trained from the fast.ai mirror of the dataset, quantized and exported, and bit-exact on the RTL for 100 images; `make ci` runs both networks.
 
 ## Completed
 
@@ -64,6 +64,10 @@ M6 complete on `feat/m6-synthesis`, waiting for review: the open-source synthesi
   - `tb/integration/npu_lenet_tb.sv` (`make integ-mnist`): weights and descriptors once, then per image load,
     run, compare the class with the model; layer traces byte for byte; perf counters printed.
   - README performance table from the counters: 18635 cycles per image, 35% of peak.
+  - CIFAR-10 (2026-11-04): `train_lenet.py` also reads the fast.ai mirror (`cifar10.tgz`, one PNG per image) and
+    puts its test set in a fixed interleaved order (10 images per class in every 100); float32 63.0% on the 10k
+    test set after 20 epochs; int8 61.8% against float32 61.75% on 2000 images; `model/data/cifar10/`
+    committed; `NETS = mnist cifar10`; 24347 cycles per image, 42% of peak.
 
 - M6 (2026-11-03):
   - Synthesis: `synth/` scripts and `.github/workflows/synth.yml` (sv2v + Yosys `synth_xilinx` with a per-module
@@ -93,7 +97,7 @@ M6 complete on `feat/m6-synthesis`, waiting for review: the open-source synthesi
 | M2 | `systolic_array` GEMM checked against the Python integer model | Done |
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
-| M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | MNIST done; CIFAR-10 pending dataset |
+| M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | Done |
 | M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | Done (PR open) |
 
 ## Verification evidence
@@ -142,17 +146,17 @@ M6 complete on `feat/m6-synthesis`, waiting for review: the open-source synthesi
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the descriptor fetch | 16 testbenches pass; MNIST 18723 cycles per image (+11 per layer for the descriptor fetch), array busy 16288 |
 | 2026-11-03 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | `make synth-ecp5` (`synth_ecp5 -abc9`, out-of-context wrapper) | Routed: `d08daa1` 33752 LUT4 cells (40%), 28.8 MHz; `95e6fe1` 42.4 MHz; `cd30631` (router2) 35590 (42%), 17360 FF, 116 MULT18X18D, 80 DP16KD, 34.8 MHz; critical path now the host register read through the descriptor mux |
 | 2026-11-03 | Verilator 5.020 | requant_unit split into 4 stages: `make clean && make ci` | 16 testbenches pass; requant latency checked at 4 cycles on every vector; MNIST cycles unchanged (18747) |
+| 2026-11-04 | numpy 2.5, Pillow 12.3 | `python3 model/train_lenet.py --net cifar10` (fast.ai mirror, channel means 125.3 / 123.0 / 113.9 as published) | float32 test accuracy 62.96% after 20 epochs |
+| 2026-11-04 | Python 3.13 | `python3 model/quantize.py --net cifar10 --report 2000` | int8 program 61.80%, float32 61.75% on the same 2000 images |
+| 2026-11-04 | Verilator 5.020 | `make integ-cifar10`, `make clean && make ci` | PASS: 100 of 100 predictions equal the integer model, 59 match the label, 14 layer traces byte-exact, 24347 cycles per image; a program copy with one changed prediction fails; all testbenches and both networks pass |
 | 2026-11-03 | Verilator 5.020 | Pipelined descriptor check: `make unit-npu_sequencer` (2000 descriptors, and 60000 each with seeds 11 and 12), `make clean && make ci` | PASS; a mutation of the error priority fails; MNIST 18747 cycles per image (+3 per layer), array busy 16288 |
 
 ## Next steps
 
-1. CIFAR-10: run `python3 model/train_lenet.py --net cifar10` and `python3 model/quantize.py --net cifar10` on a
-   machine that can download the Toronto archive, commit `model/data/cifar10/`, add `cifar10` to `NETS` in the
-   Makefile. No RTL change is expected: conv1 has C_in 3 and pad 0, everything else is identical.
-2. Timing: register the host read path of `npu_regs` (descriptor words acknowledged a cycle later) or move the
+1. Timing: register the host read path of `npu_regs` (descriptor words acknowledged a cycle later) or move the
    descriptor table into a block RAM behind the existing read port; then look at the requant multiplier and the
    `conv_engine` input address sum, the expected next critical paths (`docs/synthesis.md`).
-3. Run the unit and integration testbenches with VCS and record the results in the table below.
+2. Run the unit and integration testbenches with VCS and record the results in the table below.
 
 ## Known limitations
 

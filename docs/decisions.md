@@ -129,7 +129,8 @@ This is the most important architectural decision in v1.
   debug and has better-controlled quantization error.
 - Rejected: MNIST alone would leave the three-channel RGB path (C_in = 3) uncovered by a real network.
 - Cost: a second set of training and quantization data, and LeNet reaches only about 60% on CIFAR-10, which the
-  README must attribute to the network, not the hardware.
+  README must attribute to the network, not the hardware. Measured: float32 63.0% on the 10k test set; int8 61.8%
+  against float32 61.75% on the same 2000 images; every one of 100 images bit-exact on the RTL.
 
 ## ADR-012 No stride 2 and no per-channel quantization
 

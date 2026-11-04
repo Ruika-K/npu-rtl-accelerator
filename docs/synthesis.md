@@ -8,12 +8,13 @@ default parameters (`ARR_N = 8`, 32 KB activation buffer, 128 KB weight buffer) 
 
 ## Summary
 
-Core `npu_top` at commit `75472a4` (descriptor table in a RAM), ECP5 routed with nextpnr's router2.
+Core `npu_top` at commit `cb95def`. ECP5 is routed with nextpnr's router2 for three placement seeds; the Fmax
+column gives the worst and best of the three (see Timing).
 
 | Target | Logic | Flip-flops | Block RAM | Multipliers | Fmax |
 | --- | --- | --- | --- | --- | --- |
-| Xilinx 7-series, `synth_xilinx` (no place and route) | 18364 LUT + 3277 MUXF7/8 | 12885 | 40 RAMB36 + 1 RAMB18 | 111 DSP48E1 | - |
-| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 24970 LUT4 cells (29%) | 12546 (15%) | 81 DP16KD (39%) | 116 MULT18X18D (74%) | 56.2 MHz |
+| Xilinx 7-series, `synth_xilinx` (no place and route) | 17886 LUT + 3216 MUXF7/8 | 14012 | 40 RAMB36 + 1 RAMB18 | 111 DSP48E1 | - |
+| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 24247 LUT4 cells (28%) | 13456 (16%) | 81 DP16KD (39%) | 114 MULT18X18D (73%) | 50.8 to 60.5 MHz |
 
 The ECP5 run places the core inside `synth/npu_top_ooc.sv`, which feeds the 273 input bits from a shift register
 and XOR-reduces the 211 output bits so that the core fits the package pins. The wrapper adds 485 flip-flops and
@@ -26,15 +27,15 @@ combine two or four LUTs into one wider function.
 
 | Module | Instances | LUT | MUXF | CARRY4 | FF | DSP48E1 | RAMB18 | RAMB36 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `npu_top` | 1 | 18364 | 3277 | 1405 | 12885 | 111 | 1 | 40 |
-| `conv_engine` | 1 | 13454 | 2589 | 1021 | 9338 | 101 | 0 | 0 |
+| `npu_top` | 1 | 17886 | 3216 | 1422 | 14012 | 111 | 1 | 40 |
+| `conv_engine` | 1 | 13001 | 2510 | 1038 | 10378 | 101 | 0 | 0 |
 | &nbsp;&nbsp;`systolic_array` | 1 | 4934 | 0 | 513 | 5785 | 64 | 0 | 0 |
 | &nbsp;&nbsp;&nbsp;&nbsp;`pe` | 64 | 65 | 0 | 8 | 83 | 1 | 0 | 0 |
-| &nbsp;&nbsp;`requant_unit` | 8 | 543 | 186 | 35 | 241 | 4 | 0 | 0 |
-| `npu_regs` | 1 | 1359 | 113 | 20 | 592 | 0 | 1 | 0 |
-| `npu_sequencer` | 1 | 934 | 10 | 114 | 1745 | 8 | 0 | 0 |
-| `pool_engine` | 1 | 726 | 12 | 123 | 510 | 2 | 0 | 0 |
-| `argmax_engine` | 1 | 686 | 449 | 33 | 318 | 0 | 0 | 0 |
+| &nbsp;&nbsp;`requant_unit` | 8 | 544 | 186 | 36 | 371 | 4 | 0 | 0 |
+| `npu_regs` | 1 | 1359 | 112 | 20 | 592 | 0 | 1 | 0 |
+| `npu_sequencer` | 1 | 932 | 8 | 114 | 1745 | 8 | 0 | 0 |
+| `pool_engine` | 1 | 727 | 12 | 123 | 597 | 2 | 0 | 0 |
+| `argmax_engine` | 1 | 662 | 470 | 33 | 318 | 0 | 0 | 0 |
 | `act_buffer` | 1 | 391 | 0 | 58 | 69 | 0 | 0 | 8 |
 | `npu_dma` | 1 | 252 | 16 | 36 | 162 | 0 | 0 | 0 |
 | `host_mem_adapter` | 1 | 50 | 0 | 0 | 37 | 0 | 0 | 0 |
@@ -56,6 +57,7 @@ commit on the M6 branch; xc7 from the per-module report, ECP5 from nextpnr's dev
 | `996164e` | Sequencer fetches the descriptor word by word | 21112 | 4287 | 112 | 66143 (79%) | Placement fails |
 | `d08daa1` | ECP5 logic mapped with `abc9` (same RTL) | 21112 | 4287 | 112 | 33752 (40%) | Routed, 28.8 MHz |
 | `75472a4` | Descriptor table in a 1R1W RAM with per-word valid bits (ADR-017) | 18364 | 3277 | 111 | 24970 (29%) | Routed, 56.2 MHz |
+| `cb95def` | Registered pool write port, channel mask in the tile queue, requant multiply in two halves | 17886 | 3216 | 111 | 24247 (28%) | Routed, 50.8 to 60.5 MHz over three seeds |
 
 What each step taught:
 
@@ -92,6 +94,26 @@ The flow uses router2 since `cd30631`: router1 took 16 to 20 minutes on the earl
 on `7520872`, while router2 routes the same design in about 11 minutes. router2 makes longer wires on this design,
 so its Fmax is not directly comparable with the router1 rows; the critical path is what matters for the next step.
 
+### Placement seeds
+
+The rows above are one placement each (seed 1). Since `51b842d` the workflow routes three seeds in parallel, and
+the spread is large: the same RTL ranges over 16 MHz, and each seed exposes a different near-critical path. So a
+fix is judged by the worst of the three, not by one run.
+
+| RTL | Seed 1 | Seed 2 | Seed 3 | Worst |
+| --- | --- | --- | --- | ---: |
+| `main` after ADR-017 (`5cc8e3d`) | 56.2 MHz: `pool_engine` 2x2 maximum into the `act_buffer` write port | 45.9 MHz: drain side, queued n_tile to channel number to the C_out compare | 40.4 MHz: requant 33 x 32 multiply in one cycle | 40.4 MHz |
+| Registered pool write port only (`51b842d`) | 49.2 MHz: requant shift-and-saturate stage | 39.2 MHz: drain side as before | 40.9 MHz: drain side as before | 39.2 MHz |
+| Round two (`cb95def`) | 60.5 MHz: descriptor check stage A | 50.8 MHz: `act_buffer` read address through the port mux and the bank row increment | 52.6 MHz: descriptor check stage A | 50.8 MHz |
+
+The second row is the lesson: registering the pool output was right, but alone it did not move the worst case,
+because two other paths were nearly as long. Round two fixed those as well, at no cycle cost:
+
+- `conv_engine` pushes a mask of the columns whose output channel exists into its tile queue, computed by the
+  beat generator; the drain side selects one bit instead of adding and comparing 16-bit channel numbers.
+- `requant_unit` forms the two 33 x 16-bit halves of the multiply in one stage and adds them in the next
+  (latency 5); `conv_engine`'s flush window already covered the extra cycle.
+
 Reading the timing:
 
 - Each fix moved the critical path to a different block, which is the sign of a design without one dominant
@@ -101,10 +123,10 @@ Reading the timing:
 - The register-read path was mostly routing: 5120 descriptor flip-flops spread over the device and a 32-bit mux
   gathering them. Moving the table into a block RAM behind the existing read port (ADR-017) removed both, and
   with the same router Fmax went from 34.8 to 56.2 MHz while the logic fell from 42% to 29% of the device.
-- The current path ends at the activation buffer's write port. The cell names on it are ABC9's, but its two carry
-  chains match `pool_engine`, which drives its 2x2 maximum straight onto that port; registering the pool output
-  (one more cycle per output word) is the next step, then the requant multiplier and `conv_engine`'s five-term
-  input address sum are the expected paths after it.
+- After round two the worst paths are the descriptor check's stage A (operand selects, the size products) and
+  the activation buffer's read address (port mux and per-bank row increment), both around 17 to 20 ns and mostly
+  routing. Splitting stage A costs one cycle per layer; registering the buffer's bank addresses costs one cycle
+  of read latency, which the engines' pipelines would have to absorb.
 - These are FPGA numbers from an open flow. The same RTL in a standard-cell process would close far higher;
   the value here is that every path has been through a real placer and router and the worst ones are known.
 

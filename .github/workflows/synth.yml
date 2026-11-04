@@ -38,9 +38,15 @@ jobs:
           if-no-files-found: ignore
 
   ecp5:
-    name: ECP5 place and route (nextpnr)
+    # Post-route Fmax can depend on the placement seed, so three
+    # seeds run in parallel and each reports its own number and critical path.
+    name: ECP5 place and route (nextpnr, seed ${{ matrix.seed }})
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [1, 2, 3]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -54,13 +60,13 @@ jobs:
           sv2v --version && yosys -V && nextpnr-ecp5 --version
 
       - name: Synthesize, place and route
-        run: make synth-ecp5
+        run: make synth-ecp5 PNR_SEED=${{ matrix.seed }}
 
       - name: Report
         if: always()
         run: |
           {
-            echo '## ECP5 LFE5U-85F, nextpnr-ecp5 --freq 100'
+            echo '## ECP5 LFE5U-85F, nextpnr-ecp5 --freq 100, seed ${{ matrix.seed }}'
             echo '```'
             python3 synth/nextpnr_summary.py build/synth/nextpnr.log
             echo '```'
@@ -74,7 +80,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ecp5-reports
+          name: ecp5-reports-seed${{ matrix.seed }}
           path: |
             build/synth/ecp5_stat.txt
             build/synth/nextpnr.log

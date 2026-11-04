@@ -8,12 +8,12 @@ default parameters (`ARR_N = 8`, 32 KB activation buffer, 128 KB weight buffer) 
 
 ## Summary
 
-Core `npu_top` at commit `cd30631` (the RTL of `7520872`, routed with nextpnr's router2).
+Core `npu_top` at commit `75472a4` (descriptor table in a RAM), ECP5 routed with nextpnr's router2.
 
 | Target | Logic | Flip-flops | Block RAM | Multipliers | Fmax |
 | --- | --- | --- | --- | --- | --- |
-| Xilinx 7-series, `synth_xilinx` (no place and route) | 21482 LUT + 4439 MUXF7/8 | 17779 | 40 RAMB36 | 111 DSP48E1 | - |
-| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 35590 LUT4 cells (42%) | 17360 (20%) | 80 DP16KD (38%) | 116 MULT18X18D (74%) | 34.8 MHz |
+| Xilinx 7-series, `synth_xilinx` (no place and route) | 18364 LUT + 3277 MUXF7/8 | 12885 | 40 RAMB36 + 1 RAMB18 | 111 DSP48E1 | - |
+| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 24970 LUT4 cells (29%) | 12546 (15%) | 81 DP16KD (39%) | 116 MULT18X18D (74%) | 56.2 MHz |
 
 The ECP5 run places the core inside `synth/npu_top_ooc.sv`, which feeds the 273 input bits from a shift register
 and XOR-reduces the 211 output bits so that the core fits the package pins. The wrapper adds 485 flip-flops and
@@ -24,22 +24,22 @@ a small XOR tree to the ECP5 numbers; it does not change the core's logic.
 Cells per instance, including submodules (`synth/stat_table.py`). MUXF counts the MUXF7 / MUXF8 cells that
 combine two or four LUTs into one wider function.
 
-| Module | Instances | LUT | MUXF | CARRY4 | FF | DSP48E1 | RAMB36 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `npu_top` | 1 | 21482 | 4439 | 1397 | 17779 | 111 | 40 |
-| `conv_engine` | 1 | 13455 | 2546 | 1021 | 9338 | 101 | 0 |
-| &nbsp;&nbsp;`systolic_array` | 1 | 4934 | 0 | 513 | 5785 | 64 | 0 |
-| &nbsp;&nbsp;&nbsp;&nbsp;`pe` | 64 | 65 | 0 | 8 | 83 | 1 | 0 |
-| &nbsp;&nbsp;`requant_unit` | 8 | 543 | 186 | 35 | 241 | 4 | 0 |
-| `npu_regs` | 1 | 4480 | 1327 | 12 | 5486 | 0 | 0 |
-| `npu_sequencer` | 1 | 933 | 6 | 114 | 1745 | 8 | 0 |
-| `pool_engine` | 1 | 723 | 7 | 123 | 510 | 2 | 0 |
-| `argmax_engine` | 1 | 686 | 449 | 33 | 318 | 0 | 0 |
-| `act_buffer` | 1 | 391 | 0 | 58 | 69 | 0 | 8 |
-| `npu_dma` | 1 | 252 | 16 | 36 | 162 | 0 | 0 |
-| `host_mem_adapter` | 1 | 50 | 0 | 0 | 37 | 0 | 0 |
-| `axil_slave` | 1 | 17 | 0 | 0 | 113 | 0 | 0 |
-| `weight_buffer` | 1 | 8 | 0 | 0 | 1 | 0 | 32 |
+| Module | Instances | LUT | MUXF | CARRY4 | FF | DSP48E1 | RAMB18 | RAMB36 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `npu_top` | 1 | 18364 | 3277 | 1405 | 12885 | 111 | 1 | 40 |
+| `conv_engine` | 1 | 13454 | 2589 | 1021 | 9338 | 101 | 0 | 0 |
+| &nbsp;&nbsp;`systolic_array` | 1 | 4934 | 0 | 513 | 5785 | 64 | 0 | 0 |
+| &nbsp;&nbsp;&nbsp;&nbsp;`pe` | 64 | 65 | 0 | 8 | 83 | 1 | 0 | 0 |
+| &nbsp;&nbsp;`requant_unit` | 8 | 543 | 186 | 35 | 241 | 4 | 0 | 0 |
+| `npu_regs` | 1 | 1359 | 113 | 20 | 592 | 0 | 1 | 0 |
+| `npu_sequencer` | 1 | 934 | 10 | 114 | 1745 | 8 | 0 | 0 |
+| `pool_engine` | 1 | 726 | 12 | 123 | 510 | 2 | 0 | 0 |
+| `argmax_engine` | 1 | 686 | 449 | 33 | 318 | 0 | 0 | 0 |
+| `act_buffer` | 1 | 391 | 0 | 58 | 69 | 0 | 0 | 8 |
+| `npu_dma` | 1 | 252 | 16 | 36 | 162 | 0 | 0 | 0 |
+| `host_mem_adapter` | 1 | 50 | 0 | 0 | 37 | 0 | 0 | 0 |
+| `axil_slave` | 1 | 17 | 0 | 0 | 113 | 0 | 0 | 0 |
+| `weight_buffer` | 1 | 8 | 0 | 0 | 1 | 0 | 0 | 32 |
 
 ## How the area came down
 
@@ -55,6 +55,7 @@ commit on the M6 branch; xc7 from the per-module report, ECP5 from nextpnr's dev
 | `641e322` | Narrow requant tail; shared descriptor-check datapath | 24914 | 7410 | 112 | 61278 (73%) | Placement legalization fails |
 | `996164e` | Sequencer fetches the descriptor word by word | 21112 | 4287 | 112 | 66143 (79%) | Placement fails |
 | `d08daa1` | ECP5 logic mapped with `abc9` (same RTL) | 21112 | 4287 | 112 | 33752 (40%) | Routed, 28.8 MHz |
+| `75472a4` | Descriptor table in a 1R1W RAM with per-word valid bits (ADR-017) | 18364 | 3277 | 111 | 24970 (29%) | Routed, 56.2 MHz |
 
 What each step taught:
 
@@ -85,6 +86,7 @@ and what each one's critical path was:
 | `d08daa1` | First routed build | router1 | 33752 (40%) | 28.8 MHz | Fetched descriptor through the size products and the end-address compares to the sequencer state (32 ns) |
 | `95e6fe1` | Descriptor check as a three-stage pipeline | router1 | 33875 (40%) | 42.4 MHz | requant stage 3: 65-bit shift, saturation, rounding and zero-point adds, clamp (19.7 ns, 34 cells) |
 | `cd30631` | requant tail split into two stages; router2 | router2 | 35590 (42%) | 34.8 MHz | Host register read: address decode, the shared 160-word descriptor mux, `rd_data_o` (3.7 ns logic, 20.0 ns routing) |
+| `75472a4` | Descriptor table in a RAM | router2 | 24970 (29%) | 56.2 MHz | Into an `act_buffer` bank's write data through two carry chains, the port mux and the byte rotation (17.0 ns, 11.7 ns of it routing); `pool_engine` writes its 2x2 maximum (two signed compares) unregistered on that port |
 
 The flow uses router2 since `cd30631`: router1 took 16 to 20 minutes on the earlier builds but more than 90 minutes
 on `7520872`, while router2 routes the same design in about 11 minutes. router2 makes longer wires on this design,
@@ -96,10 +98,13 @@ Reading the timing:
   structural problem left. The three paths so far were all "too much in one cycle" (two levels of products and
   compares, a shift plus three adds) and were fixed by pipelining logic that runs once per layer or once per
   output, at a cost of 3 cycles per layer and 1 cycle of requant latency.
-- The current path is mostly routing: the 5120 descriptor flip-flops are spread over the device and the 32-bit
-  read mux gathers them. Registering the host read (descriptor words acknowledged a cycle later) or moving the
-  table into a block RAM behind the existing read port (ADR-016) removes it. After that the requant multiplier
-  and `conv_engine`'s five-term input address sum are the expected next paths.
+- The register-read path was mostly routing: 5120 descriptor flip-flops spread over the device and a 32-bit mux
+  gathering them. Moving the table into a block RAM behind the existing read port (ADR-017) removed both, and
+  with the same router Fmax went from 34.8 to 56.2 MHz while the logic fell from 42% to 29% of the device.
+- The current path ends at the activation buffer's write port. The cell names on it are ABC9's, but its two carry
+  chains match `pool_engine`, which drives its 2x2 maximum straight onto that port; registering the pool output
+  (one more cycle per output word) is the next step, then the requant multiplier and `conv_engine`'s five-term
+  input address sum are the expected paths after it.
 - These are FPGA numbers from an open flow. The same RTL in a standard-cell process would close far higher;
   the value here is that every path has been through a real placer and router and the worst ones are known.
 
@@ -110,8 +115,9 @@ Reading the timing:
 - The eight `requant_unit` instances carry a 33x32-bit multiplier each (four DSP48E1) and a 65-bit barrel shifter,
   the widest arithmetic in the design. A tape-out would size both to the real precision need (see `decisions.md`
   on the TFLite-style multiplier).
-- `npu_regs` holds the 16 x 10-word descriptor table in flip-flops (5120 of its 5486), by design (ADR-008); its
-  remaining logic is mostly the 32-bit read mux over the table. A RAM would remove both and is now a local change
-  behind the read port (ADR-016).
+- `npu_regs` keeps the 16 x 16-word descriptor table in one RAMB18 (ADR-017; until `75472a4` it was 5120
+  flip-flops and a 32-bit read mux). Its 592 flip-flops are the control and DMA registers, the logits, the
+  per-word valid bits (one per RAM word, kept at a power-of-two count so the index needs no multiplier) and the
+  read path.
 - Block RAM: the activation buffer is eight 4 KB byte banks (8 RAMB36 on xc7) and the weight buffer one 128 KB
   64-bit memory (32 RAMB36).

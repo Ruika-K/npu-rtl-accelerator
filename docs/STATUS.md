@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M6 merged. M5's second network is complete on `feat/m5-cifar10`: CIFAR-10 trained from the fast.ai mirror of the dataset, quantized and exported, and bit-exact on the RTL for 100 images; `make ci` runs both networks.
+M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bits (ADR-017), which removed the critical register-read path (ECP5 34.8 -> 56.2 MHz, 42% -> 29% of the LUT4s). M5's second network is complete on `feat/m5-cifar10`: CIFAR-10 trained from the fast.ai mirror of the dataset, quantized and exported, and bit-exact on the RTL for 100 images; `make ci` runs both networks. The next critical path is `pool_engine`'s unregistered 2x2 maximum into the activation-buffer write port.
 
 ## Completed
 
@@ -145,6 +145,8 @@ M6 merged. M5's second network is complete on `feat/m5-cifar10`: CIFAR-10 traine
 | 2026-11-03 | Verilator 5.020 | Descriptor fetch: `make unit-npu_sequencer`, `make unit-npu_regs` | PASS: 20650 fetched words with 6917 grant stalls; the table walked twice through the read port under host reads; mutations of the grant priority and of the word order fail |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the descriptor fetch | 16 testbenches pass; MNIST 18723 cycles per image (+11 per layer for the descriptor fetch), array busy 16288 |
 | 2026-11-03 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | `make synth-ecp5` (`synth_ecp5 -abc9`, out-of-context wrapper) | Routed: `d08daa1` 33752 LUT4 cells (40%), 28.8 MHz; `95e6fe1` 42.4 MHz; `cd30631` (router2) 35590 (42%), 17360 FF, 116 MULT18X18D, 80 DP16KD, 34.8 MHz; critical path now the host register read through the descriptor mux |
+| 2026-11-04 | Verilator 5.020 | Descriptor table in a RAM: `make unit-npu_regs`, `make clean && make ci` | PASS (2595 checks incl. never-written words, first strobed writes, a second reset); dropping the valid masking or the first-write fill fails the testbench; 16 testbenches pass, MNIST cycles unchanged (18747) |
+| 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Synthesis workflow on `75472a4` | xc7 18364 LUT, 3277 MUXF, 12885 FF, 111 DSP48E1, 40 RAMB36 + 1 RAMB18; ECP5 24970 LUT4 cells (29%), 12546 FF, 81 DP16KD, 116 MULT18X18D, 56.2 MHz (router2) |
 | 2026-11-03 | Verilator 5.020 | requant_unit split into 4 stages: `make clean && make ci` | 16 testbenches pass; requant latency checked at 4 cycles on every vector; MNIST cycles unchanged (18747) |
 | 2026-11-04 | numpy 2.5, Pillow 12.3 | `python3 model/train_lenet.py --net cifar10` (fast.ai mirror, channel means 125.3 / 123.0 / 113.9 as published) | float32 test accuracy 62.96% after 20 epochs |
 | 2026-11-04 | Python 3.13 | `python3 model/quantize.py --net cifar10 --report 2000` | int8 program 61.80%, float32 61.75% on the same 2000 images |
@@ -153,9 +155,8 @@ M6 merged. M5's second network is complete on `feat/m5-cifar10`: CIFAR-10 traine
 
 ## Next steps
 
-1. Timing: register the host read path of `npu_regs` (descriptor words acknowledged a cycle later) or move the
-   descriptor table into a block RAM behind the existing read port; then look at the requant multiplier and the
-   `conv_engine` input address sum, the expected next critical paths (`docs/synthesis.md`).
+1. Timing: register `pool_engine`'s 2x2 maximum before the activation-buffer write port (the current critical
+   path); then the requant multiplier and the `conv_engine` input address sum (`docs/synthesis.md`).
 2. Run the unit and integration testbenches with VCS and record the results in the table below.
 
 ## Known limitations
@@ -181,6 +182,7 @@ Full reasoning in `docs/decisions.md`; this is an index.
 | 2026-10-29 | Support both MNIST and CIFAR-10 (ADR-011) | Demonstrates programmability, covers the RGB path |
 | 2026-10-29 | One branch and one pull request per milestone (ADR-013) | The PR history records the engineering process |
 | 2026-11-03 | Synthesis-driven RTL changes: decoded selects, running addresses, descriptor fetch (ADR-016) | The first per-module report showed two thirds of the LUTs in unintended muxes |
+| 2026-11-04 | Descriptor table in a 1R1W RAM with per-word valid bits (ADR-017) | Removes the critical register-read mux and 5K flip-flops, keeps reset value and latencies |
 
 ## VCS run log
 

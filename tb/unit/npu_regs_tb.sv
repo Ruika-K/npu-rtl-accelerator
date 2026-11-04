@@ -5,7 +5,8 @@
 //   - The testbench plays the sequencer (busy / done / err / counters), the
 //     argmax engine and the two on-chip memories behind the host memory port.
 //   - Checks register reset values, RW / RO / W1P / W1C semantics, descriptor
-//     storage with byte strobes and reserved-bit masking, desc_o decoding,
+//     storage with byte strobes and reserved-bit masking, the sequencer's
+//     descriptor read port (host priority on the shared mux, one-cycle data),
 //     memory-window routing, SLVERR for unmapped / misaligned / busy accesses,
 //     HOST_CONFLICT, START side effects and irq_o.
 // Plusargs: +seed=<int> (default 1), +n=<random accesses> (default 500).
@@ -36,7 +37,10 @@ module npu_regs_tb
   // sequencer side (driven by the TB)
   logic        start_o;
   logic [4:0]  layer_cnt_o;
-  desc_t [NUM_DESC-1:0] desc_o;
+  logic        desc_rd_en_i = 1'b0;
+  logic [3:0]  desc_rd_idx_i = '0, desc_rd_word_i = '0;
+  logic        desc_rd_gnt_o, desc_rd_valid_o;
+  logic [31:0] desc_rd_data_o;
   logic        busy_i = 1'b0, done_i = 1'b0, err_i = 1'b0;
   err_e        err_code_i = ERR_NONE;
   logic [3:0]  cur_layer_i = '0;
@@ -66,7 +70,9 @@ module npu_regs_tb
       .rd_req_i (rd_req), .rd_addr_i (rd_addr), .rd_ack_o (rd_ack), .rd_data_o (rd_data), .rd_err_o (rd_err),
       .hm_req_o (hm_req), .hm_we_o (hm_we), .hm_sel_o (hm_sel), .hm_addr_o (hm_addr),
       .hm_wdata_o (hm_wdata), .hm_be_o (hm_be), .hm_ack_i (hm_ack), .hm_rdata_i (hm_rdata),
-      .start_o (start_o), .layer_cnt_o (layer_cnt_o), .desc_o (desc_o),
+      .start_o (start_o), .layer_cnt_o (layer_cnt_o),
+      .desc_rd_en_i (desc_rd_en_i), .desc_rd_idx_i (desc_rd_idx_i), .desc_rd_word_i (desc_rd_word_i),
+      .desc_rd_gnt_o (desc_rd_gnt_o), .desc_rd_valid_o (desc_rd_valid_o), .desc_rd_data_o (desc_rd_data_o),
       .busy_i (busy_i), .done_i (done_i), .err_i (err_i), .err_code_i (err_code_i), .cur_layer_i (cur_layer_i),
       .layer_cycles_i (layer_cycles_i), .total_cycles_i (total_cycles_i), .array_busy_cycles_i (array_busy_cycles_i),
       .argmax_valid_i (argmax_valid_i), .argmax_idx_i (argmax_idx_i), .argmax_logits_i (argmax_logits_i),
@@ -157,10 +163,12 @@ module npu_regs_tb
     if (exp_resp == 2'b00 && data !== exp) begin n_errors++; $display("ERROR: read %h (%s) = %h, expected %h", a, what, data, exp); end
   endtask
 
+  /* verilator lint_off BLKSEQ */   // also called from the clocked descriptor-port monitor
   task automatic check(input bit cond, input string what);
     n_checked++;
     if (!cond) begin n_errors++; $display("ERROR @%0t: %s", $time, what); end
   endtask
+  /* verilator lint_on BLKSEQ */
 
   task automatic pulse_done();
     @(negedge clk_i); done_i = 1'b1; @(negedge clk_i); done_i = 1'b0;
@@ -185,11 +193,44 @@ module npu_regs_tb
   logic [31:0] exp_abuf [logic [19:0]];
   logic [31:0] exp_wbuf [logic [19:0]];
 
+  // Sequencer descriptor read port, played by the TB while seq_walk_en is set:
+  // one request per cycle walking every (descriptor, word) pair, words 10 .. 15
+  // included (they read as 0). The grant must drop exactly in the cycles of a
+  // host descriptor read, and every grant must return its word a cycle later.
+  bit          seq_walk_en = 0, seq_pend = 0;
+  logic [31:0] seq_pend_exp = '0;
+  int          seq_pos = 0, seq_grants = 0, seq_conflicts = 0;
+  /* verilator lint_off BLKSEQ */
+  always @(negedge clk_i) begin
+    bit host_desc, en_now;
+    en_now = seq_walk_en;   // sampled once: the test sequence may change it meanwhile
+    if (en_now || seq_pend) begin
+      if (seq_pend) begin
+        check(desc_rd_valid_o && desc_rd_data_o == seq_pend_exp,
+              $sformatf("descriptor read port data %h, expected %h", desc_rd_data_o, seq_pend_exp));
+      end else begin
+        check(!desc_rd_valid_o, "descriptor read port: no data without a grant");
+      end
+      desc_rd_en_i   = en_now;
+      desc_rd_idx_i  = 4'(seq_pos / 16);
+      desc_rd_word_i = 4'(seq_pos % 16);
+      #1;
+      host_desc = rd_req && (rd_addr >= A_DESC) && (rd_addr < A_DESC + 20'h400);
+      check(desc_rd_gnt_o == (en_now && !host_desc), "descriptor read port grant follows host priority");
+      if (en_now && host_desc) seq_conflicts++;
+      seq_pend     = desc_rd_gnt_o;
+      seq_pend_exp = (seq_pos % 16 < DESC_USED_WORDS) ? exp_words[seq_pos / 16][seq_pos % 16] : 32'h0;
+      if (desc_rd_gnt_o) begin
+        seq_grants++;
+        seq_pos = (seq_pos + 1) % (NUM_DESC * 16);
+      end
+    end
+  end
+  /* verilator lint_on BLKSEQ */
+
   initial begin
     logic [31:0] v, old;
     int pulses_before, req_before;
-    desc_words_t w;
-    desc_t d;
 
     if (!$value$plusargs("seed=%d", seed)) seed = 1;
     if (!$value$plusargs("n=%d", n_random)) n_random = 500;
@@ -296,16 +337,18 @@ module npu_regs_tb
     wr(desc_addr(2, 3), 32'hA5A5_A5A5, 4'b0100);
     exp_words[2][3] = {old[31:24], 8'hA5, old[15:0]};
     rd_expect(desc_addr(2, 3), exp_words[2][3], 2'b00, "DESC byte strobe");
-    // decoded view
-    for (int i = 0; i < NUM_DESC; i++) begin
-      for (int k = 0; k < DESC_USED_WORDS; k++) w[k] = exp_words[i][k];
-      d = desc_from_words(w);
-      check(desc_o[i] == d, $sformatf("desc_o[%0d] decodes the stored words", i));
+    // sequencer read port: walk the whole table (twice) while the host keeps
+    // reading descriptor words, so that both share the read mux
+    seq_walk_en = 1;
+    while (seq_grants < 2 * NUM_DESC * 16) begin
+      int i, k;
+      i = $urandom_range(NUM_DESC - 1);
+      k = $urandom_range(15);
+      rd_expect(desc_addr(i, k), (k < DESC_USED_WORDS) ? exp_words[i][k] : 32'h0, 2'b00, "DESC word during fetch");
     end
-    check(desc_o[2].in_w == exp_words[2][1][31:16], "desc_o field spot check in_w");
-    check(desc_o[5].rq_shift == exp_words[5][8][5:0], "desc_o field spot check rq_shift");
-    check(desc_o[9].act_max == $signed(exp_words[9][9][31:24]), "desc_o field spot check act_max");
-    check(desc_o[7].op == op_e'(exp_words[7][0][3:0]), "desc_o field spot check op");
+    seq_walk_en = 0;
+    @(negedge clk_i); @(negedge clk_i);
+    check(seq_conflicts > 0, "host and sequencer collided on the descriptor mux at least once");
 
     // ---- memory windows ----
     wr(ABUF_BASE + 20'h0100, 32'h1122_3344);

@@ -2,11 +2,20 @@
 
 // Requantization unit: one int32 accumulator value -> one int8 activation.
 //
-// Implements docs/architecture.md section 3.3 as a fixed 3-stage pipeline:
+// Implements docs/architecture.md section 3.3 as a fixed 4-stage pipeline:
 //   S1  sum     = acc + bias                                   (33-bit signed)
 //   S2  prod    = sum * mult                                   (65-bit signed)
-//   S3  rounded = (prod + 2^(shift-1)) >>> shift               (round half up)
+//   S3  k       = sat(prod >>> (shift-1))                      (14-bit signed)
+//   S4  rounded = (k + 1) >>> 1, i.e. (prod + 2^(shift-1)) >>> shift (round half up)
 //       q       = clamp(rounded + z_out, act_min, act_max)     (int8)
+//
+// S3 / S4 avoid the 65-bit rounding add and keep the tail narrow:
+//   - for shift >= 1, (prod + 2^(shift-1)) >>> shift == ((prod >>> (shift-1)) + 1) >>> 1
+//     (floor division: write prod >>> (shift-1) as k, then both sides are floor((k+1)/2));
+//   - prod >>> (shift-1) is saturated to SAT_W bits first. Any value outside that
+//     range is at least 4096 away from zero after rounding, so with an int8 zero
+//     point it compares the same way against every int8 act_min / act_max, and the
+//     clamp result is unchanged. The zero-point add and the compares are SAT_W+1 bits.
 //
 // Contract:
 //   - mult is a positive int32 in [2^30, 2^31); shift is in 1..62.
@@ -37,7 +46,7 @@ module requant_unit
 
   localparam int unsigned SUM_W  = ACC_W + 1;          // 33
   localparam int unsigned MUL_W  = SUM_W + ACC_W;      // 65
-  localparam int unsigned ZP_W   = MUL_W + 1;          // 66
+  localparam int unsigned SAT_W  = 14;                 // saturated width of the shifted product
 
   // ---------------------------------------------------------------------------
   // Stage 1: bias add
@@ -106,32 +115,76 @@ module requant_unit
   end
 
   // ---------------------------------------------------------------------------
-  // Stage 3: round, shift, zero point, clamp
+  // Stage 3: shift by shift-1 and saturate
   // ---------------------------------------------------------------------------
-  logic signed [MUL_W-1:0] rnd_term_c;
-  logic signed [MUL_W-1:0] rounded_c;
-  logic signed [MUL_W-1:0] shifted_c;
-  logic signed [ZP_W-1:0]   with_zp_c;
-  logic signed [ZP_W-1:0]   min_x_c, max_x_c;
+  logic [RQ_SHIFT_W-1:0]    sh_m1_c;      // shift - 1, or 0 when shift is 0
+  logic signed [MUL_W-1:0]  shr_c;        // prod >>> (shift - 1)
+  logic                     in_range_c;   // shr_c fits in SAT_W bits
+  logic signed [SAT_W-1:0]  sat_c;
+
+  always_comb begin
+    sh_m1_c    = (s2_shift_q == '0) ? '0 : s2_shift_q - RQ_SHIFT_W'(1);
+    shr_c      = s2_prod_q >>> sh_m1_c;
+    in_range_c = (shr_c[MUL_W-1:SAT_W-1] == '0) || (shr_c[MUL_W-1:SAT_W-1] == '1);
+    if (in_range_c) begin
+      sat_c = shr_c[SAT_W-1:0];
+    end else begin
+      sat_c = shr_c[MUL_W-1] ? {1'b1, {(SAT_W-1){1'b0}}} : {1'b0, {(SAT_W-1){1'b1}}};
+    end
+  end
+
+  logic                     s3_valid_q;
+  logic signed [SAT_W-1:0]  s3_sat_q;
+  logic                     s3_noshift_q;   // shift was 0: no rounding step
+  logic signed [ACT_W-1:0]  s3_z_q, s3_min_q, s3_max_q;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      s3_valid_q   <= 1'b0;
+      s3_sat_q     <= '0;
+      s3_noshift_q <= 1'b0;
+      s3_z_q       <= '0;
+      s3_min_q     <= '0;
+      s3_max_q     <= '0;
+    end else begin
+      s3_valid_q <= s2_valid_q;
+      if (s2_valid_q) begin
+        s3_sat_q     <= sat_c;
+        s3_noshift_q <= (s2_shift_q == '0);
+        s3_z_q       <= s2_z_q;
+        s3_min_q     <= s2_min_q;
+        s3_max_q     <= s2_max_q;
+      end
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // Stage 4: round, zero point, clamp
+  // ---------------------------------------------------------------------------
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic signed [SAT_W:0]    inc_c;        // bit 0 is dropped by the >>> 1
+  /* verilator lint_on UNUSEDSIGNAL */
+  logic signed [SAT_W-1:0]  rounded_c;
+  logic signed [SAT_W:0]    with_zp_c;
+  logic signed [SAT_W:0]    min_x_c, max_x_c;
   logic signed [ACT_W-1:0]  q_c;
 
   always_comb begin
-    if (s2_shift_q == '0) begin
-      rnd_term_c = '0;
+    inc_c = $signed({s3_sat_q[SAT_W-1], s3_sat_q}) + $signed((SAT_W+1)'(1));
+    if (s3_noshift_q) begin
+      rounded_c = s3_sat_q;                    // shift 0: no rounding term, no shift
     end else begin
-      rnd_term_c = MUL_W'(1) <<< (s2_shift_q - RQ_SHIFT_W'(1));
+      rounded_c = inc_c[SAT_W:1];              // (k + 1) >>> 1
     end
-    rounded_c = s2_prod_q + rnd_term_c;
-    shifted_c = rounded_c >>> s2_shift_q;
-    with_zp_c = $signed({shifted_c[MUL_W-1], shifted_c})
-              + $signed({{(ZP_W-ACT_W){s2_z_q[ACT_W-1]}}, s2_z_q});
-    min_x_c   = $signed({{(ZP_W-ACT_W){s2_min_q[ACT_W-1]}}, s2_min_q});
-    max_x_c   = $signed({{(ZP_W-ACT_W){s2_max_q[ACT_W-1]}}, s2_max_q});
+    with_zp_c = $signed({rounded_c[SAT_W-1], rounded_c})
+              + $signed({{(SAT_W+1-ACT_W){s3_z_q[ACT_W-1]}}, s3_z_q});
+    min_x_c   = $signed({{(SAT_W+1-ACT_W){s3_min_q[ACT_W-1]}}, s3_min_q});
+    max_x_c   = $signed({{(SAT_W+1-ACT_W){s3_max_q[ACT_W-1]}}, s3_max_q});
 
     if (with_zp_c > max_x_c) begin
-      q_c = s2_max_q;
+      q_c = s3_max_q;
     end else if (with_zp_c < min_x_c) begin
-      q_c = s2_min_q;
+      q_c = s3_min_q;
     end else begin
       q_c = with_zp_c[ACT_W-1:0];
     end
@@ -142,8 +195,8 @@ module requant_unit
       valid_o <= 1'b0;
       q_o     <= '0;
     end else begin
-      valid_o <= s2_valid_q;
-      if (s2_valid_q) begin
+      valid_o <= s3_valid_q;
+      if (s3_valid_q) begin
         q_o <= q_c;
       end
     end

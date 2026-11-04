@@ -30,10 +30,17 @@ module npu_sequencer_tb
   logic conv_start_o, pool_start_o, argmax_start_o;
   logic conv_done_i = 1'b0, conv_err_i = 1'b0, pool_done_i = 1'b0, pool_err_i = 1'b0, argmax_done_i = 1'b0, argmax_err_i = 1'b0;
   err_e conv_err_code_i = ERR_NONE, pool_err_code_i = ERR_NONE, argmax_err_code_i = ERR_NONE;
+  // descriptor read port (modeled below like npu_regs)
+  logic        desc_rd_en_o;
+  logic [3:0]  desc_rd_idx_o, desc_rd_word_o;
+  logic        desc_rd_gnt_i = 1'b0, desc_rd_valid_i = 1'b0;
+  logic [31:0] desc_rd_data_i = '0;
 
   npu_sequencer dut (
       .clk_i (clk_i), .rst_ni (rst_ni),
-      .start_i (start_i), .layer_cnt_i (layer_cnt_i), .desc_i (desc_i),
+      .start_i (start_i), .layer_cnt_i (layer_cnt_i),
+      .desc_rd_en_o (desc_rd_en_o), .desc_rd_idx_o (desc_rd_idx_o), .desc_rd_word_o (desc_rd_word_o),
+      .desc_rd_gnt_i (desc_rd_gnt_i), .desc_rd_valid_i (desc_rd_valid_i), .desc_rd_data_i (desc_rd_data_i),
       .busy_o (busy_o), .done_o (done_o), .err_o (err_o), .err_code_o (err_code_o), .cur_layer_o (cur_layer_o),
       .layer_cycles_o (layer_cycles_o), .total_cycles_o (total_cycles_o), .array_busy_cycles_o (array_busy_cycles_o),
       .array_valid_i (array_valid_i),
@@ -109,6 +116,45 @@ module npu_sequencer_tb
         end
       end
     end
+  end
+  /* verilator lint_on BLKSEQ */
+
+  // ---------------------------------------------------------------------------
+  // Descriptor read port model, as npu_regs behaves: a request is granted in
+  // its own cycle unless a host read takes the mux (random, desc_busy_pct of
+  // the cycles), and the word of the table entry follows one cycle later.
+  // Requests must be for the current layer and arrive in word order.
+  // ---------------------------------------------------------------------------
+  int          desc_busy_pct = 25;
+  int          desc_req_words = 0, desc_stalls = 0;
+  logic        desc_pend = 1'b0;
+  logic [31:0] desc_pend_word = '0;
+  int          desc_next_word = 0;
+  /* verilator lint_off BLKSEQ */
+  always @(negedge clk_i) begin
+    desc_words_t words;
+    desc_rd_valid_i = desc_pend;
+    desc_rd_data_i  = desc_pend_word;
+    desc_rd_gnt_i   = desc_rd_en_o && ($urandom_range(99) >= desc_busy_pct);
+    if (desc_rd_en_o && !desc_rd_gnt_i) desc_stalls++;
+    if (desc_rd_en_o) begin
+      if (desc_rd_idx_o != cur_layer_o || int'(desc_rd_word_o) >= DESC_USED_WORDS) begin
+        n_errors++;
+        $display("ERROR @%0t: descriptor request idx %0d word %0d during layer %0d", $time,
+                 desc_rd_idx_o, desc_rd_word_o, cur_layer_o);
+      end
+    end
+    if (desc_rd_gnt_i) begin
+      if (int'(desc_rd_word_o) != desc_next_word) begin
+        n_errors++;
+        $display("ERROR @%0t: descriptor word %0d requested, expected %0d", $time, desc_rd_word_o, desc_next_word);
+      end
+      desc_next_word = (desc_next_word + 1) % DESC_USED_WORDS;
+      words          = desc_to_words(desc_i[desc_rd_idx_o]);
+      desc_pend_word = words[desc_rd_word_o];
+      desc_req_words++;
+    end
+    desc_pend = desc_rd_gnt_i;
   end
   /* verilator lint_on BLKSEQ */
 
@@ -363,8 +409,10 @@ module npu_sequencer_tb
       end
     end
 
+    check(desc_req_words > 0 && desc_stalls > 0, "descriptor fetch exercised with grant stalls");
     if (n_errors == 0) begin
-      $display("PASS: npu_sequencer_tb checked=%0d python=%0d", n_checked, n_vec);
+      $display("PASS: npu_sequencer_tb checked=%0d python=%0d desc_words=%0d stalls=%0d",
+               n_checked, n_vec, desc_req_words, desc_stalls);
       $finish;
     end else begin
       $display("FAIL: npu_sequencer_tb errors=%0d checked=%0d", n_errors, n_checked);

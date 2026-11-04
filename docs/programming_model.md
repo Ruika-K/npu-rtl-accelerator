@@ -96,6 +96,10 @@ Output sizes are computed by hardware: `OUT = IN + 2*PAD - K + 1` (CONV2D), `OUT
 7. Wait for `irq_o` or poll STATUS.DONE. Read RESULT and LOGITS; read PERF_* for performance data.
 8. Write 1 to clear STATUS.DONE. For the next image repeat steps 4, 6, 7 and 8; weights and descriptors stay resident.
 
+Do not write descriptors while STATUS.BUSY is set: the sequencer reads each descriptor word by word when its layer
+starts, so a write during a run can reach a later layer or be seen half old, half new. Reading descriptors while
+busy is fine.
+
 ## 5. Error codes
 
 | ERR_CODE | Meaning |
@@ -153,3 +157,49 @@ Descriptor table (LAYER_CNT = 8):
 The CIFAR-10 version differs in only two places: DESC[0] becomes IN 32 x 32, C_IN 3, PAD 0, and the conv1 weights
 become 75 x 8 bytes; every other descriptor has exactly the same shape and differs only in RQ_MULT / RQ_SHIFT / Z_*
 and in the weight contents. This is what "one RTL, two networks" means concretely.
+
+## 7. DMA registers
+
+The DMA (AXI4 master, 64-bit data) moves data between external memory and the on-chip buffers while the NPU is
+idle. Addresses and the length are 8-byte aligned; a transfer is split into INCR bursts of up to 16 beats that
+never cross a 4 KB boundary. While a DMA runs, host accesses to the memory windows are rejected (SLVERR,
+HOST_CONFLICT) and CTRL.START is ignored; DMA_CTRL.START is ignored while the NPU is busy.
+
+| Offset | Name | Bits | Type | Reset | Description |
+| --- | --- | --- | --- | --- | --- |
+| `0x0C0` | DMA_CTRL | [0] START | W1P | 0 | Start one transfer; also clears DMA DONE / ERR / ERR_CODE |
+| | | [1] DIR | RW | 0 | 0 load (external -> buffer), 1 store (buffer -> external) |
+| | | [2] DST_SEL | RW | 0 | Buffer: 0 act_buffer, 1 weight_buffer |
+| `0x0C4` | DMA_SRC | [31:0] | RW | 0 | External byte address, 8-byte aligned |
+| `0x0C8` | DMA_DST | [19:0] | RW | 0 | Byte offset inside the selected buffer, 8-byte aligned |
+| `0x0CC` | DMA_LEN | [19:0] | RW | 0 | Bytes, a non-zero multiple of 8 |
+| `0x0D0` | DMA_STATUS | [0] BUSY | RO | 0 | Transfer in progress |
+| | | [1] DONE | W1C | 0 | Transfer finished |
+| | | [2] ERR | W1C | 0 | Transfer stopped on an error |
+| | | [15:8] ERR_CODE | RO | 0 | `0x02` misaligned or out-of-range parameters, `0x03` AXI SLVERR / DECERR |
+
+Typical use: DMA the weight blob into weight_buffer once, DMA each image into act_buffer at the layer-0 input
+base, START, and DMA the output region back out if the host wants more than the ARGMAX result.
+
+## 8. Chip-level registers (chip_top, APB)
+
+`chip_top` exposes the NPU map above through an APB port at `0x00000 .. 0xFFFFF` (address bit 20 clear) and the
+chip registers at `0x100000` (bit 20 set). APB transfers to the NPU window become one AXI4-Lite transaction each;
+PSLVERR mirrors SLVERR, and every access to the NPU window returns PSLVERR while the core clock is gated.
+
+| Offset | Name | Bits | Type | Reset | Description |
+| --- | --- | --- | --- | --- | --- |
+| `0x100000` | CHIP_ID | [31:0] | RO | `0x4E505543` | ASCII "NPUC" |
+| `0x100004` | CLK_CTRL | [0] CORE_CLK_EN | RW | 1 | Clock of the NPU core and the pixel writer. Gate only while idle |
+| `0x100008` | PIX_CTRL | [0] EN | RW | 0 | Pixel writer enable (the FIFO still accepts data while disabled) |
+| | | [1] IRQ_EN | RW | 0 | FRAME_DONE drives `irq_o` |
+| `0x10000C` | PIX_BASE | [14:0] | RW | 0 | act_buffer byte offset of the frame |
+| `0x100010` | PIX_LEN | [14:0] | RW | 0 | Bytes per frame |
+| `0x100014` | PIX_STATUS | [0] FRAME_DONE | W1C | 0 | A frame has been written completely |
+| | | [1] SOF_ERR | W1C | 0 | A byte arrived before any sof (dropped) or a sof arrived inside a frame (frame restarted) |
+| | | [2] OVERRUN | W1C | 0 | The source pushed while the FIFO was full |
+| `0x100018` | PIX_FRAMES | [31:0] | RO | 0 | Frames completed since reset |
+
+Frame flow: set PIX_BASE to the layer-0 input base and PIX_LEN to its size, enable, stream the frame with `sof` on
+its first byte, wait for FRAME_DONE (poll or interrupt), clear it, then START the NPU as in section 4.
+

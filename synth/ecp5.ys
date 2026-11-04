@@ -1,0 +1,8 @@
+# Lattice ECP5 synthesis of npu_top inside the out-of-context wrapper
+# (synth/npu_top_ooc.sv), followed by nextpnr-ecp5 for a post-route Fmax
+# (make synth-ecp5). -abc9 maps wide muxes markedly better than the default
+# ABC flow in Yosys 0.33 (about 30-40% fewer cells in isolated tests).
+read_verilog -sv build/synth/npu_top_ooc.v
+hierarchy -check -top npu_top_ooc
+synth_ecp5 -abc9 -top npu_top_ooc -json build/synth/npu_top_ooc_ecp5.json
+tee -o build/synth/ecp5_stat.txt stat

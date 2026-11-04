@@ -265,10 +265,10 @@ structural and worth understanding: C_out = 6 uses only 6 of 8 columns; with W_o
 4 lanes; FC has a single output pixel, uses 1 of 8 rows, and is bound by weight bandwidth (8 bytes of weights per
 cycle support at most 8 MACs). The perf counters record per-layer cycles and array-active cycles.
 
-Measured (M5, `make integ-mnist`, first image): conv1 2835, pool1 1350, conv2 6041, pool2 646, fc1 6119,
-fc2 1415, fc3 209, argmax 20, total 18635 cycles with the array busy for 16288; the differences to the estimate are
-the bias prefetch per n_tile, the pipeline fill and flush per layer, and the sequential pool engine. Utilization
-is 35% of peak. See the README for the table.
+Measured (`make integ-mnist`, first image): conv1 2849, pool1 1364, conv2 6055, pool2 660, fc1 6133,
+fc2 1429, fc3 223, argmax 34, total 18747 cycles with the array busy for 16288; the differences to the estimate are
+the bias prefetch per n_tile, the pipeline fill and flush per layer, the sequential pool engine and the
+descriptor fetch and check, 14 cycles per layer (M6, section 7.3). Utilization is 35% of peak. See the README for the table.
 
 ## 6. pool_engine and argmax_engine
 
@@ -291,6 +291,7 @@ Naming: inputs end in `_i`, outputs in `_o`, the active-low reset is `rst_ni`. M
 | `clk_i`, `rst_ni` | in | Single clock domain, asynchronous active-low reset (synchronized outside the top) |
 | `s_axil_aw*_i/o`, `s_axil_w*`, `s_axil_b*`, `s_axil_ar*`, `s_axil_r*` | - | AXI4-Lite slave, 32-bit ADDR (low 20 bits used internally), 32-bit DATA |
 | `irq_o` | out | Level interrupt, `STATUS.DONE & CTRL.IRQ_EN` |
+| `pix_wr_en_i`, `pix_wr_addr_i[14:0]`, `pix_wr_data_i[8][7:0]`, `pix_wr_be_i[7:0]`, `pix_wr_ready_o` | - | Stream write port into the activation buffer for the chip-level pixel writer; granted only while no program runs and the host is not writing |
 
 ### 7.2 Internal bus from axil_slave to npu_regs
 
@@ -322,10 +323,18 @@ ignored and only the low 20 address bits are decoded.
 | Signal | Description |
 | --- | --- |
 | `start_i` (pulse), `layer_cnt_i[4:0]` | Produced by CTRL.START; `npu_regs` already suppresses START while busy |
-| `desc_i[NUM_DESC]` (array of `desc_t`) | Read-only view of the descriptor table, decoded from the stored words |
+| `desc_rd_en_o`, `desc_rd_idx_o[3:0]`, `desc_rd_word_o[3:0]` | Sequencer request for one descriptor word |
+| `desc_rd_gnt_i` | Request accepted this cycle; low only when the host reads a descriptor word in the same cycle |
+| `desc_rd_valid_i`, `desc_rd_data_i[31:0]` | The word, one cycle after the grant |
 | `busy_o`, `done_o` (pulse), `err_o` (pulse), `err_code_o`, `cur_layer_o[3:0]` | Status; busy is already low in the cycle done or err pulses |
 | `layer_cycles_o[NUM_DESC][31:0]`, `total_cycles_o[31:0]`, `array_busy_cycles_o[31:0]` | Perf counters, cleared on an accepted start; `array_busy_cycles_o` counts busy cycles with `array_valid_i` high |
 | `array_valid_i` | The systolic array's `in_valid`, from conv_engine |
+
+The sequencer fetches the current descriptor's ten words in order (11 cycles) into a local register and runs the
+checks on that register in a three-stage pipeline (3 cycles), 14 cycles per layer in all. Host reads and sequencer fetches share one 32-bit read mux over
+the table, with the host first. Until M6 the sequencer selected a whole decoded descriptor combinationally out of
+the table; synthesis showed that 16:1 select of a ~300-bit struct was the largest mux in the design, see
+ADR-016 and `docs/synthesis.md`.
 
 `npu_regs` also receives the argmax result (`argmax_valid_i`, `argmax_idx_i[3:0]`, `argmax_logits_i[16][7:0]`)
 and drives `irq_o = DONE & IRQ_EN`.
@@ -375,9 +384,11 @@ restarts the drain and corrupts the previous tile; that is a producer bug, not a
 ### 7.8 requant_unit
 
 Inputs `acc_i[31:0]`, `bias_i[31:0]`, `mult_i[31:0]`, `shift_i[5:0]`, `z_out_i[7:0]`, `act_min_i[7:0]`,
-`act_max_i[7:0]`, `valid_i`; outputs `q_o[7:0]`, `valid_o`. Fixed 3-stage pipeline (`RQ_PIPE_LAT`) split along
-the formula in section 3.3: S1 does the 33-bit bias add, S2 the 33 x 32 signed multiply, S3 the rounding shift,
-zero-point add and clamp. `valid_o` is exactly `valid_i` delayed by 3 cycles; data registers only toggle when valid.
+`act_max_i[7:0]`, `valid_i`; outputs `q_o[7:0]`, `valid_o`. Fixed 4-stage pipeline (`RQ_PIPE_LAT`) split along
+the formula in section 3.3: S1 does the 33-bit bias add, S2 the 33 x 32 signed multiply, S3 the shift by shift-1
+with saturation to 14 bits, S4 the final rounding step, zero-point add and clamp (exactly equal to the formula;
+the argument is in the module header). `valid_o` is exactly `valid_i` delayed by 4 cycles; data registers only
+toggle when valid. Until M6 S3 and S4 were one stage; the routed ECP5 build showed it as the critical path.
 
 ### 7.9 pe
 
@@ -424,3 +435,51 @@ product. The forwarding registers update unconditionally every cycle so that the
 | No DMA | v1 focuses on the compute core | M6 adds an AXI4 master that moves weights and images from external memory into the two buffers |
 | Single clock domain | Focus on the compute core | M6 `chip_top` adds a pixel-stream async FIFO, an APB or SPI configuration bridge and clock gating |
 | Weights re-read per m_tile | Inherent cost of output-stationary | On-chip SRAM bandwidth is sufficient here; with external memory, add a weight cache or move to weight-stationary |
+
+## 11. chip_top (M6)
+
+A thin SoC wrapper that shows the integration concerns the core deliberately leaves out (ADR-009). The compute
+core is unchanged; `npu_top` only gained the stream write port.
+
+```text
+ rst_ni ---> rst_sync (sys) ----> sys_rst_n                 rst_sync (pix) ---> pix_rst_n
+ sys_clk_i -> clk_gate(CORE_CLK_EN) -> core_clk
+ APB (sys_clk) --+--> apb2axil ----AXI4-Lite----> npu_top (core_clk)  <--- pix_writer (core_clk)
+                 +--> chip_regs (0x100000)                                   ^
+ pixel stream (pix_clk) ---> async_fifo (Gray pointers, 9 bits) -------------+
+```
+
+| Block | File | Role |
+| --- | --- | --- |
+| `rst_sync` | `rtl/chip/rst_sync.sv` | Asynchronous assert, synchronous release, one per clock domain |
+| `clk_gate` | `rtl/chip/clk_gate.sv` | Latch-based integrated clock gate on the core clock (`CLK_CTRL.CORE_CLK_EN`) |
+| `apb2axil` | `rtl/chip/apb2axil.sv` | APB slave to AXI4-Lite master, one transfer at a time; returns PSLVERR without a transaction while the core is gated |
+| `chip_regs` | `rtl/chip/chip_regs.sv` | Chip registers at APB `0x100000` (programming_model.md section 7) |
+| `cdc_sync`, `async_fifo` | `rtl/chip/` | Two-flop synchronizer; Gray-pointer FIFO carrying `{sof, byte}` from the pixel to the core clock |
+| `pix_writer` | `rtl/chip/pix_writer.sv` | Packs the stream into 8-byte writes at `PIX_BASE`, counts `PIX_LEN` bytes per frame, pulses frame done; flags a byte before the first sof and a sof inside a frame |
+| `chip_top` | `rtl/chip/chip_top.sv` | Wiring, APB decode (address bit 20 selects the chip registers), overrun detection (toggle synchronizer), interrupt OR |
+
+Rules the wrapper relies on:
+
+- One external reset. Each domain gets its own synchronized copy; the FIFO sees both.
+- The pixel writer and the FIFO read side run on the gated core clock, so gating the core also stops draining the
+  FIFO; the source is back-pressured through `pix_ready_o`. Software gates the core only while idle and does not
+  access the core window while gated (the bridge answers PSLVERR instead of hanging).
+- The stream port is granted only while no layer program runs and the host adapter is not writing, so a frame
+  streamed during an inference waits in the FIFO (16 entries) and completes afterwards. Double buffering (two
+  input regions, writes allowed during a run) is the natural extension.
+- An overrun is a push while the FIFO is full; it is recorded in the pixel domain as a toggle, synchronized and
+  edge-detected in the system domain, and latched in `PIX_STATUS`.
+- `irq_o` is the OR of the NPU done interrupt and the frame-done interrupt; software reads both status registers.
+
+## 12. DMA (M6)
+
+`rtl/host/npu_dma.sv` is an AXI4 master (64-bit data, single ID, INCR bursts of up to 16 beats, never crossing a
+4 KB boundary) driven by the DMA registers in `npu_regs` (programming_model.md section 7). A load writes one beat
+per cycle into act_buffer or weight_buffer through the same ports the host adapter uses; a store reads one buffer
+word per beat without prefetch (one word every few cycles, which is enough for results of a few hundred bytes).
+`npu_top` hands the memory ports to the DMA while it runs, exactly as it does for an engine, and `npu_regs`
+rejects host memory accesses meanwhile. Parameter errors (`ERR_BAD_PARAM`) and AXI error responses
+(`ERR_BAD_ADDR`) stop the transfer and are reported in DMA_STATUS. The external memory in the testbenches is
+`tb/common/axi4_slave_mem.sv`, which also checks burst alignment, size and the 4 KB rule.
+

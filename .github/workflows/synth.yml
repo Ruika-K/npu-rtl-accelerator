@@ -1,0 +1,81 @@
+name: Synthesis
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  xilinx:
+    name: xc7 resources (yosys)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update && sudo apt-get install --yes yosys
+          curl -sSL -o sv2v.zip https://github.com/zachjs/sv2v/releases/latest/download/sv2v-Linux.zip
+          unzip -q sv2v.zip
+          sudo install -m 755 sv2v-Linux/sv2v /usr/local/bin/sv2v
+          sv2v --version && yosys -V
+
+      - name: Synthesize
+        run: make synth-xilinx
+
+      - name: Report
+        if: always()
+        run: |
+          python3 synth/stat_table.py build/synth/xilinx_stat.txt | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xilinx-reports
+          path: build/synth/xilinx_stat.txt
+          if-no-files-found: ignore
+
+  ecp5:
+    name: ECP5 place and route (nextpnr)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update && sudo apt-get install --yes yosys nextpnr-ecp5
+          curl -sSL -o sv2v.zip https://github.com/zachjs/sv2v/releases/latest/download/sv2v-Linux.zip
+          unzip -q sv2v.zip
+          sudo install -m 755 sv2v-Linux/sv2v /usr/local/bin/sv2v
+          sv2v --version && yosys -V && nextpnr-ecp5 --version
+
+      - name: Synthesize, place and route
+        run: make synth-ecp5
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo '## ECP5 LFE5U-85F, nextpnr-ecp5 --freq 100'
+            echo '```'
+            python3 synth/nextpnr_summary.py build/synth/nextpnr.log
+            echo '```'
+            echo 'Yosys ABC warnings (with the pass they come from):'
+            echo '```'
+            awk '/^[0-9.]+ Executing/{h=$0} /ABC: execution of command/{print h; print}' build/synth/ecp5.log | head -20
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ecp5-reports
+          path: |
+            build/synth/ecp5_stat.txt
+            build/synth/nextpnr.log
+          if-no-files-found: ignore

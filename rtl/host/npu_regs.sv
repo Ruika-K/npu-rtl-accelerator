@@ -13,6 +13,11 @@
 //
 // CTRL.START (W1P) is ignored while busy. An accepted START pulses start_o
 // and clears DONE, ERR, ERR_CODE and RESULT.VALID.
+//
+// The sequencer reads descriptor words through desc_rd_*: a request is granted
+// in the cycle it is made unless the host reads a descriptor word in the same
+// cycle (the host has priority), and the word follows one cycle after the
+// grant. Host and sequencer share one 32-bit read mux over the table.
 module npu_regs
   import npu_pkg::*;
 (
@@ -47,7 +52,12 @@ module npu_regs
   // sequencer
   output logic                          start_o,
   output logic [4:0]                    layer_cnt_o,
-  output desc_t [NUM_DESC-1:0]          desc_o,
+  input  logic                          desc_rd_en_i,
+  input  logic [3:0]                    desc_rd_idx_i,
+  input  logic [3:0]                    desc_rd_word_i,
+  output logic                          desc_rd_gnt_o,
+  output logic                          desc_rd_valid_o,
+  output logic [31:0]                   desc_rd_data_o,
   input  logic                          busy_i,
   input  logic                          done_i,
   input  logic                          err_i,
@@ -56,6 +66,18 @@ module npu_regs
   input  logic [NUM_DESC-1:0][31:0]     layer_cycles_i,
   input  logic [31:0]                   total_cycles_i,
   input  logic [31:0]                   array_busy_cycles_i,
+
+  // DMA
+  output logic                          dma_start_o,
+  output logic                          dma_dir_o,
+  output logic                          dma_dst_sel_o,
+  output logic [31:0]                   dma_src_o,
+  output logic [19:0]                   dma_dst_o,
+  output logic [19:0]                   dma_len_o,
+  input  logic                          dma_busy_i,
+  input  logic                          dma_done_i,
+  input  logic                          dma_err_i,
+  input  err_e                          dma_err_code_i,
 
   // argmax result
   input  logic                          argmax_valid_i,
@@ -92,26 +114,76 @@ module npu_regs
 
   logic        hm_wait_q;   // a memory access is outstanding
   logic        hm_is_rd_q;
+  logic        dma_done_q, dma_err_q;
+  err_e        dma_err_code_q;
+  logic        mem_blocked_c;   // on-chip memory not available to the host
+  assign mem_blocked_c = busy_i || dma_busy_i;
 
   assign layer_cnt_o = layer_cnt_q;
   assign irq_o       = done_q & irq_en_q;
 
+  // ---------------------------------------------------------------------------
+  // Descriptor word read mux, shared by host reads and sequencer fetches
+  // ---------------------------------------------------------------------------
+  // The table is viewed as NUM_DESC x 16 words (W10 .. W15 are constant 0) so
+  // that the word index is {idx, word} with a power-of-two stride; every flow
+  // then builds a plain mux. (Indexing the 10-word rows directly made sv2v +
+  // Yosys build a barrel shifter over all 5120 bits.)
+  logic [NUM_DESC*DESC_WORDS-1:0][31:0] desc_flat_c;
   always_comb begin
-    for (int i = 0; i < NUM_DESC; i++) desc_o[i] = desc_from_words(desc_words_q[i]);
+    desc_flat_c = '0;
+    for (int i = 0; i < NUM_DESC; i++) begin
+      for (int w = 0; w < DESC_USED_WORDS; w++) begin
+        desc_flat_c[i*DESC_WORDS + w] = desc_words_q[i][w];
+      end
+    end
+  end
+
+  logic       host_desc_rd_c;     // the host reads a descriptor word this cycle
+  logic [3:0] host_desc_idx_c, host_desc_word_c;
+  logic [7:0] host_desc_woff_c;
+  logic [7:0] desc_mux_sel_c;
+  logic [31:0] desc_mux_c;
+  assign host_desc_rd_c   = rd_req_i && (decode(rd_addr_i) == TGT_REG) &&
+                            (rd_addr_i[11:0] >= REG_DESC_BASE) &&
+                            (rd_addr_i[11:0] < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4));
+  assign host_desc_woff_c = 8'((rd_addr_i[11:0] - REG_DESC_BASE) >> 2);
+  assign host_desc_idx_c  = host_desc_woff_c[7:4];
+  assign host_desc_word_c = host_desc_woff_c[3:0];
+  assign desc_mux_sel_c   = host_desc_rd_c ? {host_desc_idx_c, host_desc_word_c}
+                                           : {desc_rd_idx_i, desc_rd_word_i};
+  assign desc_mux_c       = desc_flat_c[desc_mux_sel_c];
+  assign desc_rd_gnt_o    = desc_rd_en_i && !host_desc_rd_c;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      desc_rd_valid_o <= 1'b0;
+      desc_rd_data_o  <= '0;
+    end else begin
+      desc_rd_valid_o <= desc_rd_gnt_o;
+      if (desc_rd_gnt_o) desc_rd_data_o <= desc_mux_c;
+    end
   end
 
   // ---------------------------------------------------------------------------
   // Register read mux
   // ---------------------------------------------------------------------------
+  // Descriptor words come from the shared mux above (selected by the host
+  // address in the cycle of a host read). The layer counters are read through
+  // a one-hot AND-OR mux.
+  function automatic logic [31:0] layer_cycles_read(input logic [3:0] idx);
+    logic [31:0] r;
+    r = '0;
+    for (int i = 0; i < NUM_DESC; i++) begin
+      r |= layer_cycles_i[i] & {32{idx == 4'(i)}};
+    end
+    return r;
+  endfunction
+
   function automatic logic [31:0] reg_read(input logic [11:0] a);
-    logic [7:0]  woff;   // word offset inside a block
     logic [3:0]  idx;
-    logic [3:0]  word;
     if (a >= REG_DESC_BASE && a < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4)) begin
-      woff = 8'((a - REG_DESC_BASE) >> 2);
-      idx  = woff[7:4];
-      word = woff[3:0];
-      return (word < 4'(DESC_USED_WORDS)) ? desc_words_q[idx][word] : 32'h0;
+      return desc_mux_c;   // W10 .. W15 read as 0
     end
     if (a >= REG_LOGITS_BASE && a < REG_LOGITS_BASE + 12'(NUM_LOGITS * 4)) begin
       idx = 4'((a - REG_LOGITS_BASE) >> 2);
@@ -119,7 +191,7 @@ module npu_regs
     end
     if (a >= REG_PERF_LAYER_BASE && a < REG_PERF_LAYER_BASE + 12'(NUM_DESC * 4)) begin
       idx = 4'((a - REG_PERF_LAYER_BASE) >> 2);
-      return layer_cycles_i[idx];
+      return layer_cycles_read(idx);
     end
     case (a)
       REG_ID:              return NPU_ID;
@@ -129,6 +201,11 @@ module npu_regs
       REG_RESULT:          return {23'h0, result_valid_q, 4'h0, result_idx_q};
       REG_PERF_TOTAL:      return total_cycles_i;
       REG_PERF_ARRAY_BUSY: return array_busy_cycles_i;
+      REG_DMA_CTRL:        return {29'h0, dma_dst_sel_o, dma_dir_o, 1'b0};
+      REG_DMA_SRC:         return dma_src_o;
+      REG_DMA_DST:         return {12'h0, dma_dst_o};
+      REG_DMA_LEN:         return {12'h0, dma_len_o};
+      REG_DMA_STATUS:      return {16'h0, dma_err_code_q, 5'h0, dma_err_q, dma_done_q, dma_busy_i};
       default:             return 32'h0;
     endcase
   endfunction
@@ -158,8 +235,39 @@ module npu_regs
   assign desc_woff_c = 8'((wr_off_c - REG_DESC_BASE) >> 2);
   assign desc_idx_c  = desc_woff_c[7:4];
   assign desc_word_c = desc_woff_c[3:0];
+  // Write data of a descriptor word with its reserved bits cleared. Stored words
+  // always have them cleared, so writing only the strobed bytes is the same as
+  // merging with the old word and masking.
+  logic [31:0] desc_wdata_c;
+  assign desc_wdata_c = wr_data_i & desc_word_mask(32'(desc_word_c));
   assign start_c     = wr_req_i && (wr_tgt_c == TGT_REG) && (wr_off_c == REG_CTRL) &&
-                       wr_strb_i[0] && wr_data_i[0] && !busy_i;
+                       wr_strb_i[0] && wr_data_i[0] && !busy_i && !dma_busy_i;
+  logic dma_start_c;
+  assign dma_start_c = wr_req_i && (wr_tgt_c == TGT_REG) && (wr_off_c == REG_DMA_CTRL) &&
+                       wr_strb_i[0] && wr_data_i[0] && !busy_i && !dma_busy_i;
+
+  // Descriptor table in its own process: one decoded enable per stored byte,
+  // so every flow maps it to plain clock-enabled flip-flops. The window does
+  // not overlap any other register offset. W10 .. W15 are not stored.
+  logic desc_wr_c;
+  assign desc_wr_c = wr_req_i && (wr_tgt_c == TGT_REG) &&
+                     (wr_off_c >= REG_DESC_BASE) && (wr_off_c < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4));
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      desc_words_q <= '0;
+    end else if (desc_wr_c) begin
+      for (int i = 0; i < NUM_DESC; i++) begin
+        for (int w = 0; w < DESC_USED_WORDS; w++) begin
+          for (int b = 0; b < 4; b++) begin
+            if (desc_idx_c == 4'(i) && desc_word_c == 4'(w) && wr_strb_i[b]) begin
+              desc_words_q[i][w][8*b +: 8] <= desc_wdata_c[8*b +: 8];
+            end
+          end
+        end
+      end
+    end
+  end
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
@@ -186,7 +294,15 @@ module npu_regs
       result_valid_q  <= 1'b0;
       result_idx_q    <= '0;
       logits_q        <= '0;
-      desc_words_q    <= '0;
+      dma_start_o     <= 1'b0;
+      dma_dir_o       <= 1'b0;
+      dma_dst_sel_o   <= 1'b0;
+      dma_src_o       <= '0;
+      dma_dst_o       <= '0;
+      dma_len_o       <= '0;
+      dma_done_q      <= 1'b0;
+      dma_err_q       <= 1'b0;
+      dma_err_code_q  <= ERR_NONE;
     end else begin
       // defaults for the pulses
       wr_ack_o <= 1'b0;
@@ -195,8 +311,14 @@ module npu_regs
       rd_err_o <= 1'b0;
       hm_req_o <= 1'b0;
       start_o  <= 1'b0;
+      dma_start_o <= 1'b0;
 
-      // ---- sequencer and argmax status, highest priority ----
+      // ---- sequencer, DMA and argmax status, highest priority ----
+      if (dma_done_i) dma_done_q <= 1'b1;
+      if (dma_err_i) begin
+        dma_err_q      <= 1'b1;
+        dma_err_code_q <= dma_err_code_i;
+      end
       if (done_i) done_q <= 1'b1;
       if (err_i) begin
         err_q      <= 1'b1;
@@ -234,16 +356,33 @@ module npu_regs
               end
             end else if (wr_off_c == REG_LAYER_CNT) begin
               if (wr_strb_i[0]) layer_cnt_q <= wr_data_i[4:0];
-            end else if (wr_off_c >= REG_DESC_BASE && wr_off_c < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4)) begin
-              if (desc_word_c < 4'(DESC_USED_WORDS)) begin
-                desc_words_q[desc_idx_c][desc_word_c] <=
-                    merge(desc_words_q[desc_idx_c][desc_word_c], wr_data_i, wr_strb_i) & desc_word_mask(32'(desc_word_c));
+            end else if (wr_off_c == REG_DMA_CTRL) begin
+              if (wr_strb_i[0]) begin
+                dma_dir_o     <= wr_data_i[1];
+                dma_dst_sel_o <= wr_data_i[2];
+                if (dma_start_c) begin
+                  dma_start_o <= 1'b1;
+                  if (!dma_done_i) dma_done_q <= 1'b0;
+                  if (!dma_err_i) begin dma_err_q <= 1'b0; dma_err_code_q <= ERR_NONE; end
+                end
+              end
+            end else if (wr_off_c == REG_DMA_SRC) begin
+              dma_src_o <= merge(dma_src_o, wr_data_i, wr_strb_i);
+            end else if (wr_off_c == REG_DMA_DST) begin
+              dma_dst_o <= 20'(merge({12'h0, dma_dst_o}, wr_data_i, wr_strb_i));
+            end else if (wr_off_c == REG_DMA_LEN) begin
+              dma_len_o <= 20'(merge({12'h0, dma_len_o}, wr_data_i, wr_strb_i));
+            end else if (wr_off_c == REG_DMA_STATUS) begin
+              if (wr_strb_i[0]) begin
+                if (wr_data_i[1] && !dma_done_i) dma_done_q <= 1'b0;
+                if (wr_data_i[2] && !dma_err_i)  dma_err_q  <= 1'b0;
               end
             end
+            // descriptor words: written by the process above
             // other offsets: read-only or undefined, write ignored
           end
           TGT_ABUF, TGT_WBUF: begin
-            if (busy_i) begin
+            if (mem_blocked_c) begin
               wr_ack_o        <= 1'b1;
               wr_err_o        <= 1'b1;
               host_conflict_q <= 1'b1;
@@ -273,7 +412,7 @@ module npu_regs
             rd_data_o <= reg_read(rd_addr_i[11:0]);
           end
           TGT_ABUF, TGT_WBUF: begin
-            if (busy_i) begin
+            if (mem_blocked_c) begin
               rd_ack_o        <= 1'b1;
               rd_err_o        <= 1'b1;
               rd_data_o       <= '0;

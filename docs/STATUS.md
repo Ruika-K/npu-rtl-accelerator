@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M5: LeNet-5 runs end to end on MNIST, bit-exact with the integer model on all 100 committed test images. CIFAR-10 waits for its dataset (the Toronto archive is not reachable from the CI container; the same two scripts produce it on a machine that can download it). Next: M6 options.
+M6 complete on `feat/m6-synthesis`, waiting for review: the open-source synthesis flow reports area per module on every push and places and routes the core on the ECP5-85k (`docs/synthesis.md`); the first report drove a round of RTL changes (ADR-016) that cut the logic by more than half; `chip_top` and the AXI4 master DMA are done and verified. CIFAR-10 still waits for its dataset.
 
 ## Completed
 
@@ -65,6 +65,26 @@ M5: LeNet-5 runs end to end on MNIST, bit-exact with the integer model on all 10
     run, compare the class with the model; layer traces byte for byte; perf counters printed.
   - README performance table from the counters: 18635 cycles per image, 35% of peak.
 
+- M6 (2026-11-03):
+  - Synthesis: `synth/` scripts and `.github/workflows/synth.yml` (sv2v + Yosys `synth_xilinx` with a per-module
+    table, Yosys `synth_ecp5 -abc9` + nextpnr-ecp5 on an out-of-context wrapper with a critical-path summary),
+    results and history in `docs/synthesis.md`.
+  - Synthesis-driven RTL changes (ADR-016): one-hot or power-of-two-stride selects of wide arrays, running
+    addresses in `conv_engine`, a narrow and then two-stage requant tail (latency 4), a shared descriptor-check
+    datapath pipelined over three stages, and the sequencer fetching the current descriptor word by word through
+    the register file's read port. xc7 51.2K -> 21.5K LUT; ECP5 from 173% to 42% of the LUT4s, routed.
+  - `rtl/chip/`: `rst_sync`, `clk_gate`, `cdc_sync`, `async_fifo` (Gray pointers), `apb2axil`, `pix_writer`,
+    `chip_regs`, `chip_top`; `npu_top` gained a stream write port granted while idle.
+  - Testbenches: `tb/unit/async_fifo_tb.sv` (six clock ratios, 24k words), `tb/unit/pix_writer_tb.sv` (208 frames),
+    `tb/integration/chip_top_tb.sv` (`make integ-chip`: APB loads the program, frames on the pixel clock, a frame
+    during a run, rude source, clock gate; 5 MNIST images agree with the model).
+  - DMA: `rtl/host/npu_dma.sv` (AXI4 master, 64-bit INCR bursts of up to 16 beats, no 4 KB crossing, load and
+    store for both buffers, parameter and response errors), five DMA registers in `npu_regs`, DMA and program
+    execution mutually exclusive; `npu_top` and `chip_top` expose the AXI4 master port.
+  - Testbenches: `tb/common/axi4_slave_mem.sv` (byte-array memory, random stalls, error window, protocol checks);
+    a DMA phase in `npu_top_tb` (operands of the largest conv and FC cases loaded by DMA, layer run, output stored
+    and compared, host conflict, both error codes).
+
 ## Milestone plan
 
 | Milestone | Scope | Status |
@@ -74,7 +94,7 @@ M5: LeNet-5 runs end to end on MNIST, bit-exact with the integer model on all 10
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | MNIST done; CIFAR-10 pending dataset |
-| M6 | Optional: AXI4 master DMA, `chip_top` (CDC / configuration bridge / clock gating), FPGA synthesis data | Not started |
+| M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | Done (PR open) |
 
 ## Verification evidence
 
@@ -109,13 +129,29 @@ M5: LeNet-5 runs end to end on MNIST, bit-exact with the integer model on all 10
 | 2026-11-03 | numpy 2.5 | `python3 model/train_lenet.py --net mnist` | float32 test accuracy 98.68% after 4 epochs |
 | 2026-11-03 | Python 3.13 | `python3 model/quantize.py --net mnist --report 2000` | int8 program 97.9% on 2000 images, float32 97.9% on the same images |
 | 2026-11-03 | Verilator 5.020 | `make integ-mnist` (100 images) | PASS: 100 of 100 predictions equal the integer model, 99 match the label, 14 layer traces byte-exact, 18635 cycles per image |
+| 2026-11-03 | Verilator 5.020 | `make unit-async_fifo`, `make unit-pix_writer` (seeds 1 and 7) | PASS: 24005 words over six clock ratios; 208 frames incl. sof errors |
+| 2026-11-03 | Verilator 5.020 | `make integ-chip` | PASS: 5 images through APB and the pixel stream agree with the model; back-pressure, clock gate, SOF_ERR, OVERRUN checked |
+| 2026-11-03 | Verilator 5.020 | `make clean && make ci` after chip_top | 16 testbenches pass, 106 s |
+| 2026-11-03 | Verilator 5.020 | `make integ-layers` with the DMA phase | PASS: 68 cases, 22068 checks; 385 AR and 3 AW bursts, zero protocol errors, DMA error codes 2 and 3 |
+| 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the DMA | 16 testbenches pass, 106 s |
+| 2026-11-03 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | `make synth-ecp5` | Fails in placement: TRELLIS_COMB 145254 of 83640 (173%), FF 15508, DP16KD 80, MULT18X18D 130 |
+| 2026-11-03 | Yosys 0.33 (GitHub Actions) | `make synth-xilinx`, per-module table | First report 51217 LUT (sequencer 19926, regs 14926); after the M6 area work 21112 LUT, 4287 MUXF, 16878 FF, 112 DSP48E1, 40 RAMB36 (`docs/synthesis.md`) |
+| 2026-11-03 | Verilator 5.020, Python 3.13 | requant narrow tail: `make unit-requant_unit` plus an off-line algorithm check | PASS 122557 checks incl. 2523 saturation-boundary vectors; 415620 algorithm cases equal the golden model; two mutations fail the testbench |
+| 2026-11-03 | Verilator 5.020 | Shared descriptor check: `make unit-npu_sequencer DESC_N=60000` with seeds 11 and 12 | PASS, 120000 random descriptors agree with the Python model; a mutation fails the testbench |
+| 2026-11-03 | Verilator 5.020 | Descriptor fetch: `make unit-npu_sequencer`, `make unit-npu_regs` | PASS: 20650 fetched words with 6917 grant stalls; the table walked twice through the read port under host reads; mutations of the grant priority and of the word order fail |
+| 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the descriptor fetch | 16 testbenches pass; MNIST 18723 cycles per image (+11 per layer for the descriptor fetch), array busy 16288 |
+| 2026-11-03 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | `make synth-ecp5` (`synth_ecp5 -abc9`, out-of-context wrapper) | Routed: `d08daa1` 33752 LUT4 cells (40%), 28.8 MHz; `95e6fe1` 42.4 MHz; `cd30631` (router2) 35590 (42%), 17360 FF, 116 MULT18X18D, 80 DP16KD, 34.8 MHz; critical path now the host register read through the descriptor mux |
+| 2026-11-03 | Verilator 5.020 | requant_unit split into 4 stages: `make clean && make ci` | 16 testbenches pass; requant latency checked at 4 cycles on every vector; MNIST cycles unchanged (18747) |
+| 2026-11-03 | Verilator 5.020 | Pipelined descriptor check: `make unit-npu_sequencer` (2000 descriptors, and 60000 each with seeds 11 and 12), `make clean && make ci` | PASS; a mutation of the error priority fails; MNIST 18747 cycles per image (+3 per layer), array busy 16288 |
 
 ## Next steps
 
 1. CIFAR-10: run `python3 model/train_lenet.py --net cifar10` and `python3 model/quantize.py --net cifar10` on a
    machine that can download the Toronto archive, commit `model/data/cifar10/`, add `cifar10` to `NETS` in the
    Makefile. No RTL change is expected: conv1 has C_in 3 and pad 0, everything else is identical.
-2. M6 options: AXI4 master DMA, `chip_top` with CDC and a configuration bridge, FPGA synthesis numbers.
+2. Timing: register the host read path of `npu_regs` (descriptor words acknowledged a cycle later) or move the
+   descriptor table into a block RAM behind the existing read port; then look at the requant multiplier and the
+   `conv_engine` input address sum, the expected next critical paths (`docs/synthesis.md`).
 3. Run the unit and integration testbenches with VCS and record the results in the table below.
 
 ## Known limitations
@@ -140,6 +176,7 @@ Full reasoning in `docs/decisions.md`; this is an index.
 | 2026-10-29 | Verilator as the primary simulator (ADR-010) | Reproducible by anyone, runs in CI |
 | 2026-10-29 | Support both MNIST and CIFAR-10 (ADR-011) | Demonstrates programmability, covers the RGB path |
 | 2026-10-29 | One branch and one pull request per milestone (ADR-013) | The PR history records the engineering process |
+| 2026-11-03 | Synthesis-driven RTL changes: decoded selects, running addresses, descriptor fetch (ADR-016) | The first per-module report showed two thirds of the LUTs in unintended muxes |
 
 ## VCS run log
 

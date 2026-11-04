@@ -86,6 +86,12 @@ module conv_engine
   logic [31:0] ci_off_q;    // ci * H * W
   logic [31:0] kh_off_q;    // kh * W
   logic signed [32:0] row_base_q;  // (oh - pad) * W, may be negative
+  // Running addresses, so that no multiplier sits in the beat or tile path
+  logic [19:0]         pad_w_q;     // pad * W, registered in SETUP
+  logic [WBUF_WAW-1:0] w_nt_q;      // weight word of beat 0 of the n_tile: w_word + nt
+  logic [WBUF_WAW-1:0] w_ptr_q;     // weight word of this beat: w_word + kidx * n_tiles + nt
+  logic [ABUF_AW-1:0]  col_nt_q;    // out_base + nt * N * OHW
+  logic [ABUF_AW-1:0]  col_row_q;   // out_base + nt * N * OHW + oh * OW
   logic [2:0]  pf_cnt_q;    // bias prefetch word counter
   logic [5:0]  flush_q;
 
@@ -134,9 +140,10 @@ module conv_engine
     end
   end
 
-  // Column base of the tile: out_base + (nt*N)*OHW + oh*OW + ow0
-  logic [31:0] col_base_c;
-  assign col_base_c = 32'(out_base_q) + (32'(nt_q) << LANE_W) * ohw_q + 32'(oh_i_q) * 32'(ow_q) + 32'(ow0_c);
+  // Column base of the tile: out_base + (nt*N)*OHW + oh*OW + ow0, from the
+  // running row base (all address sums wrap at the buffer width on purpose)
+  logic [ABUF_AW-1:0] col_base_c;
+  assign col_base_c = col_row_q + ABUF_AW'(ow0_c);
 
   logic last_kw_c, last_kh_c, last_beat_c, last_tile_c, last_owt_c, last_oh_c, active_c;
   assign active_c    = kidx_q < k_total_q;
@@ -163,10 +170,8 @@ module conv_engine
   /* verilator lint_off UNUSEDSIGNAL */
   logic [5:0]  unused_desc;
   logic [17:0] unused_a_hi;
-  logic [16:0] unused_col_hi;
   assign unused_desc   = {desc_i.stride_m1, desc_i.op};
   assign unused_a_hi   = a_c[32:ABUF_AW];
-  assign unused_col_hi = col_base_c[31:ABUF_AW];
   /* verilator lint_on UNUSEDSIGNAL */
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -178,6 +183,7 @@ module conv_engine
       oh_q <= '0; ow_q <= '0; hw_q <= '0; ohw_q <= '0; k_total_q <= '0; n_tiles_q <= '0; ow_tiles_q <= '0; period_q <= '0;
       nt_q <= '0; oh_i_q <= '0; owt_q <= '0; ci_q <= '0; kh_q <= '0; kw_q <= '0; kidx_q <= '0;
       ci_off_q <= '0; kh_off_q <= '0; row_base_q <= '0; pf_cnt_q <= '0; flush_q <= '0;
+      pad_w_q <= '0; w_nt_q <= '0; w_ptr_q <= '0; col_nt_q <= '0; col_row_q <= '0;
       bias_q <= '0; pf_rd_q <= 1'b0; pf_rd_idx_q <= '0;
       g_active_q <= 1'b0; g_first_q <= 1'b0; g_last_q <= 1'b0; g_tile_start_q <= 1'b0;
       g_addr_q <= '0; g_waddr_q <= '0; g_mask_q <= '0; g_col_base_q <= '0; g_ow_mask_q <= '0; g_nt_q <= '0;
@@ -229,6 +235,10 @@ module conv_engine
           n_tiles_q  <= 13'((32'(cout_q) + 32'(N - 1)) >> LANE_W);
           ow_tiles_q <= 14'((32'(ow_c) + 32'(N - 1)) >> LANE_W);
           period_q   <= (k_total_c < 22'(N)) ? 22'(N) : k_total_c;
+          pad_w_q    <= 20'(pad_q) * 20'(w_q);
+          w_nt_q     <= w_word_q;
+          col_nt_q   <= out_base_q;
+          col_row_q  <= out_base_q;
           nt_q <= '0; oh_i_q <= '0; owt_q <= '0;
           pf_cnt_q <= '0;
           state_q <= S_PREFETCH;
@@ -242,7 +252,8 @@ module conv_engine
             // start the first tile of this n_tile
             ci_q <= '0; kh_q <= '0; kw_q <= '0; kidx_q <= '0;
             ci_off_q <= '0; kh_off_q <= '0;
-            row_base_q <= (33'(oh_i_q) - 33'(pad_q)) * 33'(w_q);
+            row_base_q <= -33'(pad_w_q);     // oh is 0 at the start of every n_tile
+            w_ptr_q    <= w_nt_q;
             state_q <= S_RUN;
           end
         end
@@ -254,9 +265,9 @@ module conv_engine
           g_last_q       <= (kidx_q == k_total_q - 22'd1);
           g_tile_start_q <= (kidx_q == 22'd0);
           g_addr_q       <= a_c[ABUF_AW-1:0];
-          g_waddr_q      <= w_word_q + WBUF_WAW'(32'(kidx_q) * 32'(n_tiles_q) + 32'(nt_q));
+          g_waddr_q      <= w_ptr_q;
           g_mask_q       <= mask_c;
-          g_col_base_q   <= col_base_c[ABUF_AW-1:0];
+          g_col_base_q   <= col_base_c;
           g_ow_mask_q    <= ow_mask_c;
           g_nt_q         <= nt_q;
 
@@ -280,7 +291,8 @@ module conv_engine
 
           // tile / row / n_tile advance
           if (last_beat_c) begin
-            kidx_q <= '0;
+            kidx_q  <= '0;
+            w_ptr_q <= w_nt_q;               // next tile of the same n_tile
             ci_q <= '0; kh_q <= '0; kw_q <= '0; ci_off_q <= '0; kh_off_q <= '0;
             if (last_tile_c) begin
               flush_q <= 6'(FLUSH_CYCLES);
@@ -289,19 +301,24 @@ module conv_engine
               owt_q <= '0;
               if (last_oh_c) begin
                 oh_i_q     <= '0;
-                row_base_q <= -(33'(pad_q) * 33'(w_q));
+                row_base_q <= -33'(pad_w_q);
                 nt_q       <= nt_q + 13'd1;
+                w_nt_q     <= w_nt_q + WBUF_WAW'(1);
+                col_nt_q   <= col_nt_q + ABUF_AW'(ohw_q << LANE_W);
+                col_row_q  <= col_nt_q + ABUF_AW'(ohw_q << LANE_W);
                 pf_cnt_q   <= '0;
                 state_q    <= S_PREFETCH;
               end else begin
                 oh_i_q     <= oh_i_q + 17'd1;
                 row_base_q <= row_base_q + 33'(w_q);
+                col_row_q  <= col_row_q + ABUF_AW'(ow_q);
               end
             end else begin
               owt_q <= owt_q + 14'd1;
             end
           end else begin
-            kidx_q <= kidx_q + 22'd1;
+            kidx_q  <= kidx_q + 22'd1;
+            w_ptr_q <= w_ptr_q + WBUF_WAW'(n_tiles_q);
           end
         end
 

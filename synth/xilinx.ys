@@ -1,0 +1,7 @@
+# Generic Xilinx 7-series synthesis of npu_top for resource counts.
+# Input: build/synth/npu_top.v, the Verilog-2005 translation produced by sv2v
+# (make synth-xilinx). Not flattened, so stat reports every module.
+read_verilog -sv build/synth/npu_top.v
+hierarchy -check -top npu_top
+synth_xilinx -family xc7 -top npu_top
+tee -o build/synth/xilinx_stat.txt stat -tech xilinx

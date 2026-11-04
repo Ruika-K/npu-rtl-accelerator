@@ -99,6 +99,8 @@ This is the most important architectural decision in v1.
 - Rejected: descriptors in memory with only a pointer register is the more scalable scheme, suited to networks with
   dozens of layers. If deeper networks follow the M6 DMA, switch to "pointer plus prefetch".
 - Cost: the layer count limit is fixed by a parameter.
+- Update (M6): the sequencer no longer selects a whole descriptor out of the table; it fetches the current
+  descriptor word by word through a read port of the register file (ADR-016). The storage is unchanged.
 
 ## ADR-009 Single clock domain in v1; all SoC glue goes into chip_top
 
@@ -146,3 +148,52 @@ This is the most important architectural decision in v1.
   the author and for anyone reading the repository.
 - Rejected: a long-lived development branch merged in one go.
 - Cost: discipline in branch naming and PR descriptions.
+
+## ADR-014 chip_top: what the wrapper owns and what it does not
+
+- Choice: `chip_top` adds one reset synchronized per domain, an APB-to-AXI4-Lite bridge plus a small chip register
+  block, a pixel stream crossing domains through a Gray-pointer FIFO into a byte-packing writer, and a clock gate on
+  the core. The core keeps its AXI4-Lite port and gains only a stream write port that is granted while idle.
+- Why: these are the integration concerns a real chip has (ADR-009 deferred them) and they can each be shown with a
+  small, separately testable block. Keeping the pixel path outside the core avoids touching the engines or the
+  memories; the only arbitration added is "stream writes when nobody else writes".
+- Rejected: an SPI configuration slave (an APB port is the more common SoC boundary and the bridge is the
+  interesting part); letting frames stream into a second buffer during a run (double buffering is a small
+  extension once the single-buffer path is proven); gating only the compute engines (the monolithic `npu_top`
+  makes the register path part of the gated domain, so the bridge answers PSLVERR while gated instead of hanging).
+- Cost: a frame cannot be loaded while an inference runs, so capture and compute are serialized; the FIFO holds
+  only 16 bytes, so a source without flow control overruns quickly (recorded in PIX_STATUS).
+
+## ADR-015 DMA as a simple register-driven mover inside the core
+
+- Choice: one AXI4 master in `npu_top`, programmed through five registers, one transfer at a time, granted the
+  buffer ports like an engine, mutually exclusive with running a program.
+- Why: it removes the AXI4-Lite word-by-word loading from the critical path of the host without adding a second
+  bus master outside the core, and the mutual exclusion keeps the port arbitration a priority list. A load is one
+  beat per cycle; the store path is simple and slow because results are small.
+- Rejected: descriptor-chained DMA with its own queue (more to verify, little gain for one network at a time);
+  letting the DMA run concurrently with a program (needs a second write port or per-cycle arbitration in the
+  engines); a wider or multi-ID bus.
+- Cost: capture, load and compute are serialized; large models would want the DMA overlapped with compute.
+
+## ADR-016 Synthesis-driven changes in M6
+
+- Context: the first per-module report of the open-source flow (sv2v + Yosys, xc7) put the core at 51.2K LUTs,
+  with `npu_sequencer` at 19.9K and `npu_regs` at 14.9K, and the ECP5-85k at 173% of its LUT4s.
+- Choice:
+  1. A variable-index select from a packed array whose element width is not a power of two is written as a
+     decoded (one-hot) mux or through a view with a power-of-two stride; writes into such arrays use decoded
+     enables.
+  2. The per-beat and per-tile address products in `conv_engine` are running registers.
+  3. The sequencer fetches the current descriptor word by word through the register file's 32-bit read port,
+     shared with host reads (host first), instead of selecting the whole decoded descriptor combinationally.
+  4. `requant_unit` rounds by shifting first and saturates to 14 bits before the zero point and the clamp, which
+     is exact (proof in the module header, boundary vectors in the testbench).
+- Why: sv2v flattens such arrays and Yosys builds a barrel shifter for the variable offset; a commercial tool
+  would infer a mux from the original code, but the RTL should not depend on one tool's inference. The 16:1
+  select of a ~300-bit struct was the largest mux in the design (about 25K ECP5 cells when synthesized alone); fetching costs
+  11 cycles per layer and registers the input of the descriptor checks, which then run as a three-stage pipeline
+  (3 more cycles) because they held the longest path of the first routed design; together 0.6% of an MNIST image.
+- Rejected: moving the table into a RAM (needs a clear-after-reset sequence and multi-cycle host reads; with the
+  read port in place that is now a local change); tool-specific attributes; dropping the ECP5 target.
+- Cost: slightly more verbose RTL, 14 cycles per layer, and descriptors must not be written while busy.

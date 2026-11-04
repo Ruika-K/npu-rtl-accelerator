@@ -30,7 +30,7 @@ package npu_pkg;
   localparam int unsigned PROD_W     = 16;  // int8 x int8 product
   localparam int unsigned ACC_W      = 32;  // int32 accumulator, bias, requant multiplier
   localparam int unsigned RQ_SHIFT_W = 6;   // requant shift, documented range 1..62
-  localparam int unsigned RQ_PIPE_LAT = 3;  // requant_unit fixed pipeline latency
+  localparam int unsigned RQ_PIPE_LAT = 4;  // requant_unit fixed pipeline latency
 
   // ---------------------------------------------------------------------------
   // Host address map, 20-bit internal address (programming_model.md section 1)
@@ -51,6 +51,11 @@ package npu_pkg;
   localparam logic [11:0] REG_PERF_TOTAL      = 12'h060;
   localparam logic [11:0] REG_PERF_ARRAY_BUSY = 12'h064;
   localparam logic [11:0] REG_PERF_LAYER_BASE = 12'h080;  // NUM_DESC words
+  localparam logic [11:0] REG_DMA_CTRL        = 12'h0C0;
+  localparam logic [11:0] REG_DMA_SRC         = 12'h0C4;
+  localparam logic [11:0] REG_DMA_DST         = 12'h0C8;
+  localparam logic [11:0] REG_DMA_LEN         = 12'h0CC;
+  localparam logic [11:0] REG_DMA_STATUS      = 12'h0D0;
   localparam logic [11:0] REG_DESC_BASE       = 12'h100;  // NUM_DESC x 16 words
   localparam int unsigned DESC_WORDS          = 16;       // address stride per descriptor
   localparam int unsigned DESC_USED_WORDS     = 10;       // W0 .. W9 are stored, W10 .. W15 read as 0

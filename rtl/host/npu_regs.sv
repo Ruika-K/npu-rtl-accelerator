@@ -14,10 +14,12 @@
 // CTRL.START (W1P) is ignored while busy. An accepted START pulses start_o
 // and clears DONE, ERR, ERR_CODE and RESULT.VALID.
 //
-// The sequencer reads descriptor words through desc_rd_*: a request is granted
-// in the cycle it is made unless the host reads a descriptor word in the same
-// cycle (the host has priority), and the word follows one cycle after the
-// grant. Host and sequencer share one 32-bit read mux over the table.
+// The descriptor table is a 1R1W RAM. The sequencer reads descriptor words
+// through desc_rd_*: a request is granted in the cycle it is made unless the
+// host reads a descriptor word in the same cycle (the host has priority), and
+// the word follows one cycle after the grant. Host reads of descriptor words
+// also take the RAM's one cycle, so every register read is still acknowledged
+// one cycle after the request.
 module npu_regs
   import npu_pkg::*;
 (
@@ -110,7 +112,6 @@ module npu_regs
   logic        result_valid_q;
   logic [3:0]  result_idx_q;
   logic [NUM_LOGITS-1:0][7:0] logits_q;
-  desc_words_t [NUM_DESC-1:0] desc_words_q;
 
   logic        hm_wait_q;   // a memory access is outstanding
   logic        hm_is_rd_q;
@@ -122,55 +123,19 @@ module npu_regs
   assign layer_cnt_o = layer_cnt_q;
   assign irq_o       = done_q & irq_en_q;
 
-  // ---------------------------------------------------------------------------
-  // Descriptor word read mux, shared by host reads and sequencer fetches
-  // ---------------------------------------------------------------------------
-  // The table is viewed as NUM_DESC x 16 words (W10 .. W15 are constant 0) so
-  // that the word index is {idx, word} with a power-of-two stride; every flow
-  // then builds a plain mux. (Indexing the 10-word rows directly made sv2v +
-  // Yosys build a barrel shifter over all 5120 bits.)
-  logic [NUM_DESC*DESC_WORDS-1:0][31:0] desc_flat_c;
-  always_comb begin
-    desc_flat_c = '0;
-    for (int i = 0; i < NUM_DESC; i++) begin
-      for (int w = 0; w < DESC_USED_WORDS; w++) begin
-        desc_flat_c[i*DESC_WORDS + w] = desc_words_q[i][w];
-      end
-    end
-  end
-
-  logic       host_desc_rd_c;     // the host reads a descriptor word this cycle
-  logic [3:0] host_desc_idx_c, host_desc_word_c;
+  // Host read of a descriptor word (address decode for the descriptor RAM)
+  logic       host_desc_rd_c;
   logic [7:0] host_desc_woff_c;
-  logic [7:0] desc_mux_sel_c;
-  logic [31:0] desc_mux_c;
   assign host_desc_rd_c   = rd_req_i && (decode(rd_addr_i) == TGT_REG) &&
                             (rd_addr_i[11:0] >= REG_DESC_BASE) &&
                             (rd_addr_i[11:0] < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4));
-  assign host_desc_woff_c = 8'((rd_addr_i[11:0] - REG_DESC_BASE) >> 2);
-  assign host_desc_idx_c  = host_desc_woff_c[7:4];
-  assign host_desc_word_c = host_desc_woff_c[3:0];
-  assign desc_mux_sel_c   = host_desc_rd_c ? {host_desc_idx_c, host_desc_word_c}
-                                           : {desc_rd_idx_i, desc_rd_word_i};
-  assign desc_mux_c       = desc_flat_c[desc_mux_sel_c];
-  assign desc_rd_gnt_o    = desc_rd_en_i && !host_desc_rd_c;
-
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      desc_rd_valid_o <= 1'b0;
-      desc_rd_data_o  <= '0;
-    end else begin
-      desc_rd_valid_o <= desc_rd_gnt_o;
-      if (desc_rd_gnt_o) desc_rd_data_o <= desc_mux_c;
-    end
-  end
+  assign host_desc_woff_c = 8'((rd_addr_i[11:0] - REG_DESC_BASE) >> 2);   // {idx, word}
 
   // ---------------------------------------------------------------------------
   // Register read mux
   // ---------------------------------------------------------------------------
-  // Descriptor words come from the shared mux above (selected by the host
-  // address in the cycle of a host read). The layer counters are read through
-  // a one-hot AND-OR mux.
+  // Descriptor words come from the descriptor RAM (rd_data_o below), so they
+  // read as 0 here. The layer counters are read through a one-hot AND-OR mux.
   function automatic logic [31:0] layer_cycles_read(input logic [3:0] idx);
     logic [31:0] r;
     r = '0;
@@ -183,7 +148,7 @@ module npu_regs
   function automatic logic [31:0] reg_read(input logic [11:0] a);
     logic [3:0]  idx;
     if (a >= REG_DESC_BASE && a < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4)) begin
-      return desc_mux_c;   // W10 .. W15 read as 0
+      return 32'h0;        // the word itself comes from the descriptor RAM
     end
     if (a >= REG_LOGITS_BASE && a < REG_LOGITS_BASE + 12'(NUM_LOGITS * 4)) begin
       idx = 4'((a - REG_LOGITS_BASE) >> 2);
@@ -246,35 +211,81 @@ module npu_regs
   assign dma_start_c = wr_req_i && (wr_tgt_c == TGT_REG) && (wr_off_c == REG_DMA_CTRL) &&
                        wr_strb_i[0] && wr_data_i[0] && !busy_i && !dma_busy_i;
 
-  // Descriptor table in its own process: one decoded enable per stored byte,
-  // so every flow maps it to plain clock-enabled flip-flops. The window does
-  // not overlap any other register offset. W10 .. W15 are not stored.
-  logic desc_wr_c;
-  assign desc_wr_c = wr_req_i && (wr_tgt_c == TGT_REG) &&
-                     (wr_off_c >= REG_DESC_BASE) && (wr_off_c < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4));
+  // ---------------------------------------------------------------------------
+  // Descriptor table: a 1R1W RAM of NUM_DESC x DESC_WORDS words at {idx, word}
+  // ---------------------------------------------------------------------------
+  // W10 .. W15 are never written. One valid bit per word makes the table read
+  // as 0 after reset without a clearing sequence: a word that was never written
+  // reads as 0, and the first write to a word writes all four bytes (the bytes
+  // without a strobe as 0). The valid bit is read together with the RAM, so a
+  // read and a write of the same word in one cycle both see the old word.
+  // The read port serves host reads first, then sequencer fetches.
+  localparam int unsigned DESC_RAM_DEPTH = NUM_DESC * DESC_WORDS;
+  localparam int unsigned DESC_AW        = $clog2(DESC_RAM_DEPTH);
+
+  logic desc_wr_c, desc_store_c;
+  assign desc_wr_c    = wr_req_i && (wr_tgt_c == TGT_REG) &&
+                        (wr_off_c >= REG_DESC_BASE) && (wr_off_c < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4));
+  assign desc_store_c = desc_wr_c && (desc_word_c < 4'(DESC_USED_WORDS));
+
+  logic [DESC_RAM_DEPTH-1:0] desc_valid_q;
+  logic                      desc_ram_rd_en_c;
+  logic [DESC_AW-1:0]        desc_ram_rd_addr_c, desc_ram_wr_addr_c;
+  logic [31:0]               desc_ram_rdata, desc_ram_wdata_c;
+  logic [3:0]                desc_ram_be_c;
+  logic                      desc_first_wr_c;
+  logic                      desc_rvalid_q;     // valid bit of the word on desc_ram_rdata
+  logic [31:0]               desc_rword_c;      // that word, or 0 if it was never written
+
+  assign desc_rd_gnt_o      = desc_rd_en_i && !host_desc_rd_c;
+  assign desc_ram_rd_en_c   = host_desc_rd_c || desc_rd_gnt_o;
+  assign desc_ram_rd_addr_c = host_desc_rd_c ? DESC_AW'(host_desc_woff_c) : DESC_AW'({desc_rd_idx_i, desc_rd_word_i});
+  assign desc_ram_wr_addr_c = DESC_AW'({desc_idx_c, desc_word_c});
+  assign desc_first_wr_c    = !desc_valid_q[desc_ram_wr_addr_c];
+  assign desc_ram_be_c      = wr_strb_i | {4{desc_first_wr_c}};
+  always_comb begin
+    for (int b = 0; b < 4; b++) desc_ram_wdata_c[8*b +: 8] = wr_strb_i[b] ? desc_wdata_c[8*b +: 8] : 8'h00;
+  end
+
+  sram_1r1w #(.WIDTH(32), .DEPTH(DESC_RAM_DEPTH)) u_desc_ram (
+      .clk_i     (clk_i),
+      .rd_en_i   (desc_ram_rd_en_c),
+      .rd_addr_i (desc_ram_rd_addr_c),
+      .rd_data_o (desc_ram_rdata),
+      .wr_en_i   (desc_store_c),
+      .wr_addr_i (desc_ram_wr_addr_c),
+      .wr_data_i (desc_ram_wdata_c),
+      .wr_be_i   (desc_ram_be_c)
+  );
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      desc_words_q <= '0;
-    end else if (desc_wr_c) begin
-      for (int i = 0; i < NUM_DESC; i++) begin
-        for (int w = 0; w < DESC_USED_WORDS; w++) begin
-          for (int b = 0; b < 4; b++) begin
-            if (desc_idx_c == 4'(i) && desc_word_c == 4'(w) && wr_strb_i[b]) begin
-              desc_words_q[i][w][8*b +: 8] <= desc_wdata_c[8*b +: 8];
-            end
-          end
-        end
-      end
+      desc_valid_q    <= '0;
+      desc_rvalid_q   <= 1'b0;
+      desc_rd_valid_o <= 1'b0;
+    end else begin
+      if (desc_store_c)     desc_valid_q[desc_ram_wr_addr_c] <= 1'b1;
+      if (desc_ram_rd_en_c) desc_rvalid_q <= desc_valid_q[desc_ram_rd_addr_c];
+      desc_rd_valid_o <= desc_rd_gnt_o;
     end
   end
+
+  assign desc_rword_c   = desc_rvalid_q ? desc_ram_rdata : 32'h0;
+  assign desc_rd_data_o = desc_rword_c;
+
+  // Host read data: a descriptor word straight from the RAM in the cycle after
+  // the request, everything else from the read register.
+  logic [31:0] rd_data_q;
+  logic        rd_from_desc_q;
+  assign rd_data_o = rd_from_desc_q ? desc_rword_c : rd_data_q;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       wr_ack_o        <= 1'b0;
       wr_err_o        <= 1'b0;
       rd_ack_o        <= 1'b0;
-      rd_data_o       <= '0;
+      rd_data_q       <= '0;
+      rd_from_desc_q  <= 1'b0;
       rd_err_o        <= 1'b0;
       hm_req_o        <= 1'b0;
       hm_we_o         <= 1'b0;
@@ -305,6 +316,7 @@ module npu_regs
       dma_err_code_q  <= ERR_NONE;
     end else begin
       // defaults for the pulses
+      rd_from_desc_q <= host_desc_rd_c;
       wr_ack_o <= 1'b0;
       wr_err_o <= 1'b0;
       rd_ack_o <= 1'b0;
@@ -409,13 +421,13 @@ module npu_regs
         case (rd_tgt_c)
           TGT_REG: begin
             rd_ack_o  <= 1'b1;
-            rd_data_o <= reg_read(rd_addr_i[11:0]);
+            rd_data_q <= reg_read(rd_addr_i[11:0]);
           end
           TGT_ABUF, TGT_WBUF: begin
             if (mem_blocked_c) begin
               rd_ack_o        <= 1'b1;
               rd_err_o        <= 1'b1;
-              rd_data_o       <= '0;
+              rd_data_q       <= '0;
               host_conflict_q <= 1'b1;
             end else begin
               hm_req_o   <= 1'b1;
@@ -430,7 +442,7 @@ module npu_regs
           default: begin
             rd_ack_o  <= 1'b1;
             rd_err_o  <= 1'b1;
-            rd_data_o <= '0;
+            rd_data_q <= '0;
           end
         endcase
       end
@@ -440,7 +452,7 @@ module npu_regs
         hm_wait_q <= 1'b0;
         if (hm_is_rd_q) begin
           rd_ack_o  <= 1'b1;
-          rd_data_o <= hm_rdata_i;
+          rd_data_q <= hm_rdata_i;
         end else begin
           wr_ack_o <= 1'b1;
         end

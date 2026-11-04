@@ -100,7 +100,8 @@ This is the most important architectural decision in v1.
   dozens of layers. If deeper networks follow the M6 DMA, switch to "pointer plus prefetch".
 - Cost: the layer count limit is fixed by a parameter.
 - Update (M6): the sequencer no longer selects a whole descriptor out of the table; it fetches the current
-  descriptor word by word through a read port of the register file (ADR-016). The storage is unchanged.
+  descriptor word by word through a read port of the register file (ADR-016).
+- Update (after M6): the table itself moved from flip-flops into a 1R1W RAM behind that port (ADR-017).
 
 ## ADR-009 Single clock domain in v1; all SoC glue goes into chip_top
 
@@ -194,6 +195,25 @@ This is the most important architectural decision in v1.
   select of a ~300-bit struct was the largest mux in the design (about 25K ECP5 cells when synthesized alone); fetching costs
   11 cycles per layer and registers the input of the descriptor checks, which then run as a three-stage pipeline
   (3 more cycles) because they held the longest path of the first routed design; together 0.6% of an MNIST image.
-- Rejected: moving the table into a RAM (needs a clear-after-reset sequence and multi-cycle host reads; with the
+- Rejected at the time: moving the table into a RAM (thought to need a clear-after-reset sequence and multi-cycle
+  host reads; done later without either, ADR-017; with the
   read port in place that is now a local change); tool-specific attributes; dropping the ECP5 target.
 - Cost: slightly more verbose RTL, 14 cycles per layer, and descriptors must not be written while busy.
+
+## ADR-017 Descriptor table in a 1R1W RAM with per-word valid bits
+
+- Context: after ADR-016 the routed ECP5 build's critical path was the host register read through the 160-word
+  descriptor mux over 5120 flip-flops, 3.7 ns of logic and 20 ns of routing.
+- Choice: an `sram_1r1w` of NUM_DESC x 16 words at `{idx, word}` holds the table; its one read port serves host
+  reads first and sequencer fetches otherwise (the existing port). One valid bit per word, cleared by reset,
+  masks the RAM output, and the first write to a word writes all four bytes with the unstrobed ones as 0. Host
+  descriptor reads take the word straight from the RAM output in the cycle after the request.
+- Why: it removes the flip-flops and the mux at once, keeps the documented reset value (every word reads 0)
+  without a clearing sequence, and keeps the one-cycle register read and fetch latency, so no other block and no
+  cycle count changes. xc7 21.5K -> 18.4K LUT and 17.8K -> 12.9K FF; ECP5 42% -> 29% of the LUT4s and
+  34.8 -> 56.2 MHz with the same router.
+- Rejected: a clear-after-reset sequence (256 cycles during which host accesses and START must wait); a
+  registered host read (removes the decode from the path but not the mux and its routing); leaving the reset
+  value undefined (a programming-model change for no benefit).
+- Cost: 256 valid flip-flops and a small first-write rule; the RAM read-before-write behaviour is now part of
+  the contract (a read and a write of the same word in one cycle return the old word, as before).

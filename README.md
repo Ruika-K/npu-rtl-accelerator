@@ -103,14 +103,14 @@ Measured by `.github/workflows/synth.yml` on every push; details and the history
 
 | Target | Logic | Flip-flops | Block RAM | Multipliers | Fmax |
 | --- | --- | --- | --- | --- | --- |
-| Xilinx 7-series, Yosys `synth_xilinx` | 21.5K LUT + 4.4K MUXF | 17.8K | 40 RAMB36 | 111 DSP48E1 | - |
-| Lattice ECP5-85k, Yosys + nextpnr, placed and routed | 35.6K LUT4 (42%) | 17.4K | 80 DP16KD | 116 MULT18X18D | 34.8 MHz |
+| Xilinx 7-series, Yosys `synth_xilinx` | 18.4K LUT + 3.3K MUXF | 12.9K | 40 RAMB36 + 1 RAMB18 | 111 DSP48E1 | - |
+| Lattice ECP5-85k, Yosys + nextpnr, placed and routed | 25.0K LUT4 (29%) | 12.5K | 81 DP16KD | 116 MULT18X18D | 56.2 MHz |
 
 The first per-module report put the core at 51K LUTs, two thirds of it in the sequencer and the register file:
 variable-index selects of wide arrays, which sv2v and Yosys turn into barrel shifters. Rewriting those selects,
-fetching the current descriptor word by word instead of selecting it whole, and pipelining the two longest paths
-brought the core to the numbers above for 14 extra cycles per layer. At the routed ECP5 clock one MNIST image
-takes about 0.54 ms.
+fetching the current descriptor word by word instead of selecting it whole, pipelining the two longest paths
+and finally moving the descriptor table into a RAM brought the core to the numbers above for 14 extra cycles
+per layer. At the routed ECP5 clock one MNIST image takes about 0.33 ms.
 
 ## Documentation
 

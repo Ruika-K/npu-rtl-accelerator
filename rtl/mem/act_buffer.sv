@@ -4,10 +4,15 @@
 // (docs/architecture.md section 4.2).
 //
 // Read:  N consecutive bytes starting at any byte address, fixed latency
-//        ABUF_RD_LAT = 2 (one SRAM cycle plus one rotation register).
+//        ABUF_RD_LAT = 2 (a request register, then the SRAM cycle; the lane
+//        rotation after the SRAM is combinational).
 //        Lane i of rd_data_o is the byte at rd_addr_i + i.
 // Write: N consecutive bytes starting at any byte address, byte enable per
-//        lane, single cycle.
+//        lane, taken in one cycle.
+// Both requests are registered per bank before the SRAMs, so the SRAM pins are
+// driven from registers next to them. Reads and writes are delayed alike, so
+// the ordering is unchanged: a read and a write of the same byte in one cycle
+// read the old value, a read in the cycle after a write reads the new one.
 // Bank b serves lane (b - A[LANE_W-1:0]) mod N at row A >> LANE_W, plus one
 // when the lane wrapped past the end of the row (b < A mod N).
 // Addresses past the end of the buffer wrap; the callers never rely on that.
@@ -60,40 +65,61 @@ module act_buffer
     end
   end
 
-  for (genvar b = 0; b < N; b++) begin : g_bank
-    sram_1r1w #(.WIDTH(8), .DEPTH(ROWS)) u_sram (
-        .clk_i     (clk_i),
-        .rd_en_i   (rd_en_i),
-        .rd_addr_i (bank_rd_row_c[b]),
-        .rd_data_o (bank_rd_data[b]),
-        .wr_en_i   (wr_en_i),
-        .wr_addr_i (bank_wr_row_c[b]),
-        .wr_data_i (bank_wr_data_c[b]),
-        .wr_be_i   (bank_wr_be_c[b])
-    );
-  end
-
   // ---------------------------------------------------------------------------
-  // Read pipeline: rotation after the SRAM cycle
+  // Request registers in front of the banks
   // ---------------------------------------------------------------------------
-  logic              rd_valid_s1_q;
-  logic [LANE_W-1:0] rd_rot_s1_q;
+  logic                    rd_en_q, wr_en_q;
+  logic [N-1:0][ROW_W-1:0] bank_rd_row_q, bank_wr_row_q;
+  logic [N-1:0][7:0]       bank_wr_data_q;
+  logic [N-1:0]            bank_wr_be_q;
+  logic [LANE_W-1:0]       rd_rot_q;      // rotation of the read in the SRAM cycle
+  logic [LANE_W-1:0]       rd_rot_out_q;  // rotation of the data on the SRAM outputs
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      rd_valid_s1_q <= 1'b0;
-      rd_rot_s1_q   <= '0;
-      rd_valid_o    <= 1'b0;
-      rd_data_o     <= '0;
+      rd_en_q        <= 1'b0;
+      wr_en_q        <= 1'b0;
+      bank_rd_row_q  <= '0;
+      bank_wr_row_q  <= '0;
+      bank_wr_data_q <= '0;
+      bank_wr_be_q   <= '0;
+      rd_rot_q       <= '0;
+      rd_rot_out_q   <= '0;
+      rd_valid_o     <= 1'b0;
     end else begin
-      rd_valid_s1_q <= rd_en_i;
-      rd_rot_s1_q   <= rd_rot_c;
-      rd_valid_o    <= rd_valid_s1_q;
-      if (rd_valid_s1_q) begin
-        for (int i = 0; i < N; i++) begin
-          rd_data_o[i] <= bank_rd_data[LANE_W'(i) + rd_rot_s1_q];   // mod N by truncation
-        end
+      rd_en_q    <= rd_en_i;
+      wr_en_q    <= wr_en_i;
+      rd_valid_o <= rd_en_q;
+      if (rd_en_i) begin
+        bank_rd_row_q <= bank_rd_row_c;
+        rd_rot_q      <= rd_rot_c;
       end
+      if (rd_en_q) rd_rot_out_q <= rd_rot_q;
+      if (wr_en_i) begin
+        bank_wr_row_q  <= bank_wr_row_c;
+        bank_wr_data_q <= bank_wr_data_c;
+        bank_wr_be_q   <= bank_wr_be_c;
+      end
+    end
+  end
+
+  for (genvar b = 0; b < N; b++) begin : g_bank
+    sram_1r1w #(.WIDTH(8), .DEPTH(ROWS)) u_sram (
+        .clk_i     (clk_i),
+        .rd_en_i   (rd_en_q),
+        .rd_addr_i (bank_rd_row_q[b]),
+        .rd_data_o (bank_rd_data[b]),
+        .wr_en_i   (wr_en_q),
+        .wr_addr_i (bank_wr_row_q[b]),
+        .wr_data_i (bank_wr_data_q[b]),
+        .wr_be_i   (bank_wr_be_q[b])
+    );
+  end
+
+  // Lane rotation of the SRAM outputs (they hold their value between reads)
+  always_comb begin
+    for (int i = 0; i < N; i++) begin
+      rd_data_o[i] = bank_rd_data[LANE_W'(i) + rd_rot_out_q];   // mod N by truncation
     end
   end
 

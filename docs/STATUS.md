@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M6 merged. Follow-up timing work on `perf/desc-table-ram`: the descriptor table moved into a 1R1W RAM with per-word valid bits (ADR-017), which removed the critical register-read path (ECP5 34.8 -> 56.2 MHz, 42% -> 29% of the LUT4s). Timing round two on `perf/pool-output-reg` (registered pool write port, channel mask in the tile queue, two-stage requant multiply) raised the worst of three placement seeds from 40.4 to 50.8 MHz.
+M6 merged. Follow-up timing work on `perf/desc-table-ram`: the descriptor table moved into a 1R1W RAM with per-word valid bits (ADR-017), which removed the critical register-read path (ECP5 34.8 -> 56.2 MHz, 42% -> 29% of the LUT4s). Timing round two on `perf/pool-output-reg` (registered pool write port, channel mask in the tile queue, two-stage requant multiply) raised the worst of three placement seeds from 40.4 to 50.8 MHz, and round three on `perf/timing-round3` (registered `act_buffer` requests, a split first stage of the descriptor check) to 55.9 MHz.
 
 ## Completed
 
@@ -141,6 +141,8 @@ M6 merged. Follow-up timing work on `perf/desc-table-ram`: the descriptor table 
 | 2026-11-03 | Verilator 5.020 | Descriptor fetch: `make unit-npu_sequencer`, `make unit-npu_regs` | PASS: 20650 fetched words with 6917 grant stalls; the table walked twice through the read port under host reads; mutations of the grant priority and of the word order fail |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the descriptor fetch | 16 testbenches pass; MNIST 18723 cycles per image (+11 per layer for the descriptor fetch), array busy 16288 |
 | 2026-11-03 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | `make synth-ecp5` (`synth_ecp5 -abc9`, out-of-context wrapper) | Routed: `d08daa1` 33752 LUT4 cells (40%), 28.8 MHz; `95e6fe1` 42.4 MHz; `cd30631` (router2) 35590 (42%), 17360 FF, 116 MULT18X18D, 80 DP16KD, 34.8 MHz; critical path now the host register read through the descriptor mux |
+| 2026-11-05 | Verilator 5.020 | Registered `act_buffer` requests, split check stage O: unit testbenches, `make clean && make ci` | PASS; mutations (rotation from the wrong stage, wait count of three) fail; MNIST 18755 cycles per image (+1 per layer), array busy 16288 |
+| 2026-11-05 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `93eac9a` | 62.0 / 60.9 / 55.9 MHz, worst 55.9 (was 50.8); xc7 17866 LUT, 14469 FF; ECP5 24516 LUT4 cells (29%) |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `main` (`5cc8e3d`) | 56.2 / 45.9 / 40.4 MHz, three different critical paths |
 | 2026-11-04 | Verilator 5.020 | Registered pool write port, channel mask in the tile queue, two-stage requant multiply: unit testbenches, `make clean && make ci` | PASS; mutations (early capture, off-by-one mask, signed low half) fail; cycle counts unchanged |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `cb95def` | 60.5 / 50.8 / 52.6 MHz, worst 50.8 (was 40.4); xc7 17886 LUT, 14012 FF; ECP5 24247 LUT4 cells (28%) |
@@ -154,8 +156,9 @@ M6 merged. Follow-up timing work on `perf/desc-table-ram`: the descriptor table 
 1. CIFAR-10: run `python3 model/train_lenet.py --net cifar10` and `python3 model/quantize.py --net cifar10` on a
    machine that can download the Toronto archive, commit `model/data/cifar10/`, add `cifar10` to `NETS` in the
    Makefile. No RTL change is expected: conv1 has C_in 3 and pad 0, everything else is identical.
-2. Timing: split the descriptor check's stage A, then register the activation buffer's bank addresses (the worst
-   paths of the three-seed sweep, `docs/synthesis.md`).
+2. Timing: the requant shift amount fans out from one register to the eight shifters in every seed (Yosys merges
+   the per-unit copies); duplicate it in a way synthesis keeps, or split the shift over two stages
+   (`docs/synthesis.md`).
 3. Run the unit and integration testbenches with VCS and record the results in the table below.
 
 ## Known limitations

@@ -157,7 +157,9 @@ q_out   = clamp(rounded + z_out, act_min, act_max)    // int8 result
 - 32 KB, built from 8 banks of 4 KB x 8-bit 1R1W SRAM; the bank number is the low 3 bits of the byte address.
 - Read port: 8 consecutive bytes starting at any byte address A, issued in one cycle, returned after a fixed
   2-cycle latency. Internally bank b reads index `(A + ((b - A[2:0]) mod 8)) >> 3` and the output is rotated by
-  `A[2:0]` back into natural order.
+  `A[2:0]` back into natural order. The per-bank addresses, write data and byte enables are registered in front
+  of the SRAMs (the first of the two cycles) and the rotation after them is combinational; reads and writes are
+  delayed alike, so a read sees every write issued in an earlier cycle.
 - Write port: the same unaligned 8-byte write with an 8-bit byte enable.
 - Two clients: the engines (conv / pool / argmax share one read and one write port) and the host. Host accesses
   while the NPU is busy are rejected with SLVERR.
@@ -265,10 +267,10 @@ structural and worth understanding: C_out = 6 uses only 6 of 8 columns; with W_o
 4 lanes; FC has a single output pixel, uses 1 of 8 rows, and is bound by weight bandwidth (8 bytes of weights per
 cycle support at most 8 MACs). The perf counters record per-layer cycles and array-active cycles.
 
-Measured (`make integ-mnist`, first image): conv1 2849, pool1 1364, conv2 6055, pool2 660, fc1 6133,
-fc2 1429, fc3 223, argmax 34, total 18747 cycles with the array busy for 16288; the differences to the estimate are
+Measured (`make integ-mnist`, first image): conv1 2850, pool1 1365, conv2 6056, pool2 661, fc1 6134,
+fc2 1430, fc3 224, argmax 35, total 18755 cycles with the array busy for 16288; the differences to the estimate are
 the bias prefetch per n_tile, the pipeline fill and flush per layer, the sequential pool engine and the
-descriptor fetch and check, 14 cycles per layer (M6, section 7.3). Utilization is 35% of peak. See the README for the table.
+descriptor fetch and check, 15 cycles per layer (section 7.3). Utilization is 35% of peak. See the README for the table.
 
 ## 6. pool_engine and argmax_engine
 
@@ -333,7 +335,7 @@ ignored and only the low 20 address bits are decoded.
 | `array_valid_i` | The systolic array's `in_valid`, from conv_engine |
 
 The sequencer fetches the current descriptor's ten words in order (11 cycles) into a local register and runs the
-checks on that register in a three-stage pipeline (3 cycles), 14 cycles per layer in all. Host reads and sequencer fetches share one 32-bit read mux over
+checks on that register in a four-stage pipeline (4 cycles), 15 cycles per layer in all. Host reads and sequencer fetches share one 32-bit read mux over
 the table, with the host first. Until M6 the sequencer selected a whole decoded descriptor combinationally out of
 the table; synthesis showed that 16:1 select of a ~300-bit struct was the largest mux in the design, see
 ADR-016 and `docs/synthesis.md`.

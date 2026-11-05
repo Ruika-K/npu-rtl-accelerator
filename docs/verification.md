@@ -56,7 +56,7 @@ Rules:
    once, then per image the input is written, the run started and RESULT compared with the integer model's
    prediction; every prediction must agree (bit-exact end to end, not merely the same accuracy). For the first two
    images every layer's output region is read back and compared byte for byte. The per-layer cycle counts of the
-   first image are printed for the README table. (M5, MNIST; CIFAR-10 with its own data files)
+   first image are printed for the README table. (M5: MNIST and CIFAR-10, each with its own data files)
 4. Error injection: at least one case per error code at the unit level (M3) and an error descriptor with recovery
    at the top level (M4).
 
@@ -100,5 +100,5 @@ Constraints:
 | M2 | `systolic_array` is bit-exact on 200 random GEMMs, including K < 8 and K > 256 |
 | M3 | `axil_slave`, `npu_regs` and `npu_sequencer` unit testbenches pass; every error code is covered; descriptor checks agree with the Python model |
 | M4 | Single-layer CONV2D / FC / MAXPOOL / ARGMAX cases are bit-exact at the engine level and through AXI4-Lite at the top level |
-| M5 | LeNet-5 is bit-exact end to end on every tested image (MNIST; CIFAR-10 once its training data is available); CI green; README has the performance table |
+| M5 | LeNet-5 is bit-exact end to end on every tested image (MNIST and CIFAR-10, 100 images each in CI); CI green; README has the performance tables |
 | M6 | Optional items each define their own: DMA integration testbench, chip_top CDC testbench, FPGA synthesis report |

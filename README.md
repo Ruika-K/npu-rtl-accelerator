@@ -67,8 +67,9 @@ make integ-mnist IMAGES=10   # the network test on fewer images
 
 Regenerating the network data needs only numpy: `python3 model/train_lenet.py --net mnist` trains float32
 LeNet-5 (MNIST downloads automatically), then `python3 model/quantize.py --net mnist` quantizes, builds the
-descriptors and writes `model/data/mnist/program.txt`. CIFAR-10 uses the same two commands with `--net cifar10`
-once `cifar-10-python.tar.gz` is in `model/out/datasets/`.
+descriptors and writes `model/data/mnist/program.txt`. CIFAR-10 uses the same two commands with `--net cifar10`;
+the trainer reads either the original `cifar-10-python.tar.gz` or the fast.ai mirror `cifar10.tgz` (PNG files,
+decoded with Pillow) from `model/out/datasets/`, and downloads one of them if neither is there.
 
 With a commercial simulator (VCS) the same filelists are used:
 
@@ -95,6 +96,23 @@ One image through the 8-layer program, read from the performance counters (`make
 All 100 test images in `model/data/mnist/program.txt` give the same class as the integer model (99 of 100 match the
 label); the first two images are also checked layer by layer, byte for byte. The float32 model scores 97.9% and
 the int8 program 97.9% on the same 2000 test images (`model/data/mnist/net.json`).
+
+### CIFAR-10 on the same RTL
+
+Only conv1 changes (32x32x3 input, no padding, 75 weight rows instead of 25); every other layer has the same shape
+and the same cycle count (`make integ-cifar10`):
+
+| Layer | Shape | Cycles | Useful MACs | Note |
+| --- | --- | --- | --- | --- |
+| conv1 5x5, 3->6, pad 0 | 32x32x3 -> 28x28x6 | 8450 | 352.8K | K_total 75 per tile instead of 25 |
+| pool1 to argmax | as above | 15905 | 299K | identical to MNIST |
+| **Total** | | **24355** | **651.7K** | array busy 21888 cycles; 42% of the 64 MAC/cycle peak |
+
+All 100 test images in `model/data/cifar10/program.txt` (10 per class) give the same class as the integer model, 59
+match the label, and the first two are checked layer by layer. LeNet-5 is a small network for CIFAR-10: float32
+reaches 63.0% on the 10k test set, and on the first 2000 test images the int8 program scores 61.8% against 61.75%
+for float32 (`model/data/cifar10/net.json`), so quantization costs nothing; the accuracy is the network's, not the
+hardware's.
 
 ## Synthesis (open-source flow)
 
@@ -132,7 +150,7 @@ hide a path that another exposes. At the worst of the three, one MNIST image tak
 | M2 | `systolic_array` GEMM checked against the Python integer model | Done |
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact through AXI4-Lite | Done |
-| M5 | LeNet-5 end to end: numpy training, quantization and export, MNIST bit-exact on 100 images, performance table | MNIST done, CIFAR-10 pending its dataset |
+| M5 | LeNet-5 end to end: numpy training, quantization and export, MNIST and CIFAR-10 bit-exact on 100 images each, performance tables | Done |
 | M6 | Open-source synthesis flow and numbers, `chip_top` (CDC, APB bridge, clock gating), AXI4 master DMA | Done |
 
 ## Originality

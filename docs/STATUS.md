@@ -98,7 +98,7 @@ M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bi
 | M3 | `axil_slave`, `npu_regs`, `npu_sequencer`, error codes | Done |
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | Done |
-| M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | Done (PR open) |
+| M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | Done |
 
 ## Verification evidence
 

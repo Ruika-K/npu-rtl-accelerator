@@ -219,3 +219,23 @@ This is the most important architectural decision in v1.
   value undefined (a programming-model change for no benefit).
 - Cost: 256 valid flip-flops and a small first-write rule; the RAM read-before-write behaviour is now part of
   the contract (a read and a write of the same word in one cycle return the old word, as before).
+
+## ADR-018 Keep every requant unit's copy of the layer constants
+
+- Context: each of the eight `requant_unit`s carries the layer's multiplier, shift amount, output zero point
+  and clamp bounds down its own pipeline. The copies are identical, so Yosys's `opt_merge` keeps one register
+  per stage, which then drives all eight units. On ECP5 the shift amount into the eight 65-bit shifters was the
+  critical path of every seed after timing round three (12.6 to 14.2 ns of routing), and once that was fixed the
+  multiplier into the eight DSP multiplies was the critical path of another.
+- Choice: `synth/ecp5.ys` runs `proc`, selects the flip-flop cells of the 17 layer-constant registers of
+  `requant_unit` and sets `keep` on them before `synth_ecp5`; `select -assert-count 17` fails the run if the
+  selection ever changes. The RTL is unchanged.
+- Why: duplication of a high-fanout register is a physical decision, not a functional one, and belongs in the
+  implementation flow; this is the open-flow counterpart of a `max_fanout` or `dont_touch` constraint. A `keep`
+  attribute in the RTL does not stop `opt_merge` in Yosys 0.33 (checked on a small example), a `keep` on the
+  cells does. Covering the whole class at once avoids fixing one merged register per placement seed.
+- Rejected: duplicating the registers in the RTL (synthesis merges them again); splitting the shift over two
+  stages first (more latency, and the multiplier path would remain); leaving the constants merged and relying
+  on the placer.
+- Cost: 896 flip-flops on ECP5 (14054 to 14950, 17% of the device, between `f46e958` and `d64fd0c`); the xc7
+  resource report, which is not placed, does not apply the rule.

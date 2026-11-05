@@ -4,7 +4,13 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bits (ADR-017), which removed the critical register-read path (ECP5 34.8 -> 56.2 MHz, 42% -> 29% of the LUT4s). Timing round two (registered pool write port, channel mask in the tile queue, two-stage requant multiply) raised the worst of three placement seeds from 40.4 to 50.8 MHz, and round three (registered `act_buffer` requests, a split first stage of the descriptor check) to 55.9 MHz. M5's second network is complete on `feat/m5-cifar10`: CIFAR-10 trained from the fast.ai mirror of the dataset, quantized and exported, and bit-exact on the RTL for 100 images; `make ci` runs both networks.
+All milestones M1 to M6 are merged, both networks (MNIST and CIFAR-10) run bit-exact in `make ci`, and the
+work is now timing closure on the open ECP5 flow, judged by the worst of three placement seeds. The descriptor
+table in a RAM (ADR-017) took ECP5 from 34.8 to 56.2 MHz; rounds two and three raised the worst seed from 40.4 to
+55.9 MHz. Round four (branch `perf/requant-shift-fanout`) keeps every requant unit's copy of the layer constants
+in ECP5 synthesis (ADR-018), pipelines `conv_engine`'s setup products and replaces the bias prefetch address
+adder with a running pointer: worst seed 57.1 MHz, all three seeds within 57.1 to 60.5 MHz, no cycle count
+changed.
 
 ## Completed
 
@@ -88,6 +94,9 @@ M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bi
   - Testbenches: `tb/common/axi4_slave_mem.sv` (byte-array memory, random stalls, error window, protocol checks);
     a DMA phase in `npu_top_tb` (operands of the largest conv and FC cases loaded by DMA, layer run, output stored
     and compared, host conflict, both error codes).
+  - Timing round four (2026-11-05): `keep` on the 17 layer-constant registers of each `requant_unit` in
+    `synth/ecp5.ys` (ADR-018); `conv_engine` setup products in a three-stage free-running pipeline; running
+    bias prefetch pointer. ECP5 worst seed 55.9 -> 57.1 MHz, cycle counts unchanged.
 
 ## Milestone plan
 
@@ -147,6 +156,9 @@ M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bi
 | 2026-11-03 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | `make synth-ecp5` (`synth_ecp5 -abc9`, out-of-context wrapper) | Routed: `d08daa1` 33752 LUT4 cells (40%), 28.8 MHz; `95e6fe1` 42.4 MHz; `cd30631` (router2) 35590 (42%), 17360 FF, 116 MULT18X18D, 80 DP16KD, 34.8 MHz; critical path now the host register read through the descriptor mux |
 | 2026-11-05 | Verilator 5.020 | Registered `act_buffer` requests, split check stage O: unit testbenches, `make clean && make ci` | PASS; mutations (rotation from the wrong stage, wait count of three) fail; MNIST 18755 cycles per image (+1 per layer), array busy 16288 |
 | 2026-11-05 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `93eac9a` | 62.0 / 60.9 / 55.9 MHz, worst 55.9 (was 50.8); xc7 17866 LUT, 14469 FF; ECP5 24516 LUT4 cells (29%) |
+| 2026-11-05 | Verilator 5.020 | `conv_engine` setup pipeline and running prefetch pointer: `make clean && make ci` | PASS, MNIST 18755 and CIFAR-10 24355 cycles per image (unchanged); six mutations (no max, K instead of K * K, OH * OH, pointer frozen, step of two, reloaded per n_tile) fail `conv_engine_tb`; a tile period that settles 16 cycles late fails it as well |
+| 2026-11-05 | Yosys 0.33 | `keep` selection on a small eight-unit example | Exactly 17 register cells selected; without `keep` the identical registers merge, with it every unit keeps its copy |
+| 2026-11-05 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweeps of `f46e958`, `d64fd0c`, `99104df` | Worst 54.9, 50.2, then 57.1 MHz; `99104df`: 57.1 / 60.5 / 57.6 MHz, xc7 17987 LUT, 14491 FF, 110 DSP48E1; ECP5 27310 LUT4 cells (32%), 14964 FF |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `main` (`5cc8e3d`) | 56.2 / 45.9 / 40.4 MHz, three different critical paths |
 | 2026-11-04 | Verilator 5.020 | Registered pool write port, channel mask in the tile queue, two-stage requant multiply: unit testbenches, `make clean && make ci` | PASS; mutations (early capture, off-by-one mask, signed low half) fail; cycle counts unchanged |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `cb95def` | 60.5 / 50.8 / 52.6 MHz, worst 50.8 (was 40.4); xc7 17886 LUT, 14012 FF; ECP5 24247 LUT4 cells (28%) |
@@ -161,9 +173,9 @@ M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bi
 
 ## Next steps
 
-1. Timing: the requant shift amount fans out from one register to the eight shifters in every seed (Yosys merges
-   the per-unit copies); duplicate it in a way synthesis keeps, or split the shift over two stages
-   (`docs/synthesis.md`).
+1. Timing: all three seeds now fail inside one requant unit, on the 65-bit shift-and-saturate stage or the
+   low-half multiply (11.3 to 12.6 ns of routing each). Split the shift over two stages (one more cycle of
+   requant latency, to be checked against `conv_engine`'s flush window) and re-sweep (`docs/synthesis.md`).
 2. Run the unit and integration testbenches with VCS and record the results in the table below.
 
 ## Known limitations
@@ -190,6 +202,7 @@ Full reasoning in `docs/decisions.md`; this is an index.
 | 2026-10-29 | One branch and one pull request per milestone (ADR-013) | The PR history records the engineering process |
 | 2026-11-03 | Synthesis-driven RTL changes: decoded selects, running addresses, descriptor fetch (ADR-016) | The first per-module report showed two thirds of the LUTs in unintended muxes |
 | 2026-11-04 | Descriptor table in a 1R1W RAM with per-word valid bits (ADR-017) | Removes the critical register-read mux and 5K flip-flops, keeps reset value and latencies |
+| 2026-11-05 | Keep every requant unit's copy of the layer constants in ECP5 synthesis (ADR-018) | Merged copies drove eight units from one register; 896 flip-flops buy a local route |
 
 ## VCS run log
 

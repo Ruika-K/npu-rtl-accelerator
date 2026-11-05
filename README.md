@@ -83,15 +83,15 @@ One image through the 8-layer program, read from the performance counters (`make
 
 | Layer | Shape | Cycles | Useful MACs | Note |
 | --- | --- | --- | --- | --- |
-| conv1 5x5, 1->6, pad 2 | 28x28x1 -> 28x28x6 | 2849 | 117.6K | 6 of 8 columns used, last column tile 4 of 8 lanes |
-| pool1 | -> 14x14x6 | 1364 | - | sequential FSM |
-| conv2 5x5, 6->16 | -> 10x10x16 | 6055 | 240K | 10 of 16 lanes in the last column tile |
-| pool2 | -> 5x5x16 | 660 | - | |
-| fc1 400->120 | | 6133 | 48K | weight-bandwidth bound: 1 of 8 rows |
-| fc2 120->84 | | 1429 | 10.1K | |
-| fc3 84->10 | | 223 | 0.8K | |
-| argmax | | 34 | - | |
-| **Total** | | **18747** | **416.5K** | array busy 16288 cycles; 35% of the 64 MAC/cycle peak |
+| conv1 5x5, 1->6, pad 2 | 28x28x1 -> 28x28x6 | 2850 | 117.6K | 6 of 8 columns used, last column tile 4 of 8 lanes |
+| pool1 | -> 14x14x6 | 1365 | - | sequential FSM |
+| conv2 5x5, 6->16 | -> 10x10x16 | 6056 | 240K | 10 of 16 lanes in the last column tile |
+| pool2 | -> 5x5x16 | 661 | - | |
+| fc1 400->120 | | 6134 | 48K | weight-bandwidth bound: 1 of 8 rows |
+| fc2 120->84 | | 1430 | 10.1K | |
+| fc3 84->10 | | 224 | 0.8K | |
+| argmax | | 35 | - | |
+| **Total** | | **18755** | **416.5K** | array busy 16288 cycles; 35% of the 64 MAC/cycle peak |
 
 All 100 test images in `model/data/mnist/program.txt` give the same class as the integer model (99 of 100 match the
 label); the first two images are also checked layer by layer, byte for byte. The float32 model scores 97.9% and
@@ -104,9 +104,9 @@ and the same cycle count (`make integ-cifar10`):
 
 | Layer | Shape | Cycles | Useful MACs | Note |
 | --- | --- | --- | --- | --- |
-| conv1 5x5, 3->6, pad 0 | 32x32x3 -> 28x28x6 | 8449 | 352.8K | K_total 75 per tile instead of 25 |
-| pool1 to argmax | as above | 15898 | 299K | identical to MNIST |
-| **Total** | | **24347** | **651.7K** | array busy 21888 cycles; 42% of the 64 MAC/cycle peak |
+| conv1 5x5, 3->6, pad 0 | 32x32x3 -> 28x28x6 | 8450 | 352.8K | K_total 75 per tile instead of 25 |
+| pool1 to argmax | as above | 15905 | 299K | identical to MNIST |
+| **Total** | | **24355** | **651.7K** | array busy 21888 cycles; 42% of the 64 MAC/cycle peak |
 
 All 100 test images in `model/data/cifar10/program.txt` (10 per class) give the same class as the integer model, 59
 match the label, and the first two are checked layer by layer. LeNet-5 is a small network for CIFAR-10: float32
@@ -121,15 +121,15 @@ Measured by `.github/workflows/synth.yml` on every push; details and the history
 
 | Target | Logic | Flip-flops | Block RAM | Multipliers | Fmax |
 | --- | --- | --- | --- | --- | --- |
-| Xilinx 7-series, Yosys `synth_xilinx` | 17.9K LUT + 3.2K MUXF | 14.0K | 40 RAMB36 + 1 RAMB18 | 111 DSP48E1 | - |
-| Lattice ECP5-85k, Yosys + nextpnr, placed and routed | 24.2K LUT4 (28%) | 13.5K | 81 DP16KD | 114 MULT18X18D | 50.8 to 60.5 MHz (3 seeds) |
+| Xilinx 7-series, Yosys `synth_xilinx` | 17.9K LUT + 3.2K MUXF | 14.5K | 40 RAMB36 + 1 RAMB18 | 111 DSP48E1 | - |
+| Lattice ECP5-85k, Yosys + nextpnr, placed and routed | 24.5K LUT4 (29%) | 13.9K | 81 DP16KD | 114 MULT18X18D | 55.9 to 62.0 MHz (3 seeds) |
 
 The first per-module report put the core at 51K LUTs, two thirds of it in the sequencer and the register file:
 variable-index selects of wide arrays, which sv2v and Yosys turn into barrel shifters. Rewriting those selects,
 fetching the current descriptor word by word instead of selecting it whole, pipelining the two longest paths
 and moving the descriptor table into a RAM, then removing the paths each routed build exposed, brought the core
-to the numbers above for 14 extra cycles per layer. Fmax is quoted over three placement seeds because one seed can
-hide a path that another exposes. At the worst of the three, one MNIST image takes about 0.37 ms.
+to the numbers above for 15 extra cycles per layer. Fmax is quoted over three placement seeds because one seed can
+hide a path that another exposes. At the worst of the three, one MNIST image takes about 0.34 ms.
 
 ## Documentation
 

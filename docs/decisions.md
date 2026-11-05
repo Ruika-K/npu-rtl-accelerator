@@ -199,7 +199,8 @@ This is the most important architectural decision in v1.
 - Rejected at the time: moving the table into a RAM (thought to need a clear-after-reset sequence and multi-cycle
   host reads; done later without either, ADR-017; with the
   read port in place that is now a local change); tool-specific attributes; dropping the ECP5 target.
-- Cost: slightly more verbose RTL, 14 cycles per layer, and descriptors must not be written while busy.
+- Cost: slightly more verbose RTL, 14 cycles per layer (15 since the check's first stage was split, see
+  `synthesis.md`), and descriptors must not be written while busy.
 
 ## ADR-017 Descriptor table in a 1R1W RAM with per-word valid bits
 

@@ -8,13 +8,13 @@ default parameters (`ARR_N = 8`, 32 KB activation buffer, 128 KB weight buffer) 
 
 ## Summary
 
-Core `npu_top` at commit `cb95def`. ECP5 is routed with nextpnr's router2 for three placement seeds; the Fmax
+Core `npu_top` at commit `93eac9a`. ECP5 is routed with nextpnr's router2 for three placement seeds; the Fmax
 column gives the worst and best of the three (see Timing).
 
 | Target | Logic | Flip-flops | Block RAM | Multipliers | Fmax |
 | --- | --- | --- | --- | --- | --- |
-| Xilinx 7-series, `synth_xilinx` (no place and route) | 17886 LUT + 3216 MUXF7/8 | 14012 | 40 RAMB36 + 1 RAMB18 | 111 DSP48E1 | - |
-| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 24247 LUT4 cells (28%) | 13456 (16%) | 81 DP16KD (39%) | 114 MULT18X18D (73%) | 50.8 to 60.5 MHz |
+| Xilinx 7-series, `synth_xilinx` (no place and route) | 17866 LUT + 3196 MUXF7/8 | 14469 | 40 RAMB36 + 1 RAMB18 | 111 DSP48E1 | - |
+| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 24516 LUT4 cells (29%) | 13913 (17%) | 81 DP16KD (39%) | 114 MULT18X18D (73%) | 55.9 to 62.0 MHz |
 
 The ECP5 run places the core inside `synth/npu_top_ooc.sv`, which feeds the 273 input bits from a shift register
 and XOR-reduces the 211 output bits so that the core fits the package pins. The wrapper adds 485 flip-flops and
@@ -27,17 +27,17 @@ combine two or four LUTs into one wider function.
 
 | Module | Instances | LUT | MUXF | CARRY4 | FF | DSP48E1 | RAMB18 | RAMB36 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `npu_top` | 1 | 17886 | 3216 | 1422 | 14012 | 111 | 1 | 40 |
-| `conv_engine` | 1 | 13001 | 2510 | 1038 | 10378 | 101 | 0 | 0 |
+| `npu_top` | 1 | 17866 | 3196 | 1422 | 14469 | 111 | 1 | 40 |
+| `conv_engine` | 1 | 12978 | 2495 | 1038 | 10378 | 101 | 0 | 0 |
 | &nbsp;&nbsp;`systolic_array` | 1 | 4934 | 0 | 513 | 5785 | 64 | 0 | 0 |
 | &nbsp;&nbsp;&nbsp;&nbsp;`pe` | 64 | 65 | 0 | 8 | 83 | 1 | 0 | 0 |
 | &nbsp;&nbsp;`requant_unit` | 8 | 544 | 186 | 36 | 371 | 4 | 0 | 0 |
-| `npu_regs` | 1 | 1359 | 112 | 20 | 592 | 0 | 1 | 0 |
-| `npu_sequencer` | 1 | 932 | 8 | 114 | 1745 | 8 | 0 | 0 |
+| `npu_regs` | 1 | 1361 | 112 | 20 | 592 | 0 | 1 | 0 |
+| `npu_sequencer` | 1 | 931 | 8 | 114 | 1998 | 8 | 0 | 0 |
 | `pool_engine` | 1 | 727 | 12 | 123 | 597 | 2 | 0 | 0 |
 | `argmax_engine` | 1 | 662 | 470 | 33 | 318 | 0 | 0 | 0 |
-| `act_buffer` | 1 | 391 | 0 | 58 | 69 | 0 | 0 | 8 |
-| `npu_dma` | 1 | 252 | 16 | 36 | 162 | 0 | 0 | 0 |
+| `act_buffer` | 1 | 391 | 0 | 58 | 273 | 0 | 0 | 8 |
+| `npu_dma` | 1 | 254 | 11 | 36 | 162 | 0 | 0 | 0 |
 | `host_mem_adapter` | 1 | 50 | 0 | 0 | 37 | 0 | 0 | 0 |
 | `axil_slave` | 1 | 17 | 0 | 0 | 113 | 0 | 0 | 0 |
 | `weight_buffer` | 1 | 8 | 0 | 0 | 1 | 0 | 0 | 32 |
@@ -58,6 +58,7 @@ commit on the M6 branch; xc7 from the per-module report, ECP5 from nextpnr's dev
 | `d08daa1` | ECP5 logic mapped with `abc9` (same RTL) | 21112 | 4287 | 112 | 33752 (40%) | Routed, 28.8 MHz |
 | `75472a4` | Descriptor table in a 1R1W RAM with per-word valid bits (ADR-017) | 18364 | 3277 | 111 | 24970 (29%) | Routed, 56.2 MHz |
 | `cb95def` | Registered pool write port, channel mask in the tile queue, requant multiply in two halves | 17886 | 3216 | 111 | 24247 (28%) | Routed, 50.8 to 60.5 MHz over three seeds |
+| `93eac9a` | Registered `act_buffer` requests, descriptor check stage O split from the products | 17866 | 3196 | 111 | 24516 (29%) | Routed, 55.9 to 62.0 MHz over three seeds |
 
 What each step taught:
 
@@ -105,6 +106,7 @@ fix is judged by the worst of the three, not by one run.
 | `main` after ADR-017 (`5cc8e3d`) | 56.2 MHz: `pool_engine` 2x2 maximum into the `act_buffer` write port | 45.9 MHz: drain side, queued n_tile to channel number to the C_out compare | 40.4 MHz: requant 33 x 32 multiply in one cycle | 40.4 MHz |
 | Registered pool write port only (`51b842d`) | 49.2 MHz: requant shift-and-saturate stage | 39.2 MHz: drain side as before | 40.9 MHz: drain side as before | 39.2 MHz |
 | Round two (`cb95def`) | 60.5 MHz: descriptor check stage A | 50.8 MHz: `act_buffer` read address through the port mux and the bank row increment | 52.6 MHz: descriptor check stage A | 50.8 MHz |
+| Round three (`93eac9a`) | 62.0 MHz | 60.9 MHz | 55.9 MHz | 55.9 MHz |
 
 The second row is the lesson: registering the pool output was right, but alone it did not move the worst case,
 because two other paths were nearly as long. Round two fixed those as well, at no cycle cost:
@@ -123,10 +125,15 @@ Reading the timing:
 - The register-read path was mostly routing: 5120 descriptor flip-flops spread over the device and a 32-bit mux
   gathering them. Moving the table into a block RAM behind the existing read port (ADR-017) removed both, and
   with the same router Fmax went from 34.8 to 56.2 MHz while the logic fell from 42% to 29% of the device.
-- After round two the worst paths are the descriptor check's stage A (operand selects, the size products) and
-  the activation buffer's read address (port mux and per-bank row increment), both around 17 to 20 ns and mostly
-  routing. Splitting stage A costs one cycle per layer; registering the buffer's bank addresses costs one cycle
-  of read latency, which the engines' pipelines would have to absorb.
+- Round three removed both remaining paths. `act_buffer` registers the per-bank addresses, write data and byte
+  enables next to its SRAMs and makes the lane rotation after them combinational, so the read latency stays two
+  cycles and no engine changes. The descriptor check's first stage was split into operand selection and the
+  size products (one more cycle per layer).
+- In all three round-three seeds the critical path is now the same one: requant stage 3, from the shift-amount
+  register into the eight 65-bit shifters (15.8 to 17.7 ns, 12.6 to 14.2 ns of it routing). The eight units
+  hold identical copies of that register, Yosys merges them into one, and the single register then drives all
+  eight shifters spread around the DSP columns. Fixing it needs either register duplication that synthesis keeps
+  (a tool-specific attribute) or a shift split over two stages; both are recorded as next steps.
 - These are FPGA numbers from an open flow. The same RTL in a standard-cell process would close far higher;
   the value here is that every path has been through a real placer and router and the worst ones are known.
 

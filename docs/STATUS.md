@@ -4,7 +4,7 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bits (ADR-017), which removed the critical register-read path (ECP5 34.8 -> 56.2 MHz, 42% -> 29% of the LUT4s). Timing round two (registered pool write port, channel mask in the tile queue, two-stage requant multiply) raised the worst of three placement seeds from 40.4 to 50.8 MHz. M5's second network is complete on `feat/m5-cifar10`: CIFAR-10 trained from the fast.ai mirror of the dataset, quantized and exported, and bit-exact on the RTL for 100 images; `make ci` runs both networks.
+M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bits (ADR-017), which removed the critical register-read path (ECP5 34.8 -> 56.2 MHz, 42% -> 29% of the LUT4s). Timing round two (registered pool write port, channel mask in the tile queue, two-stage requant multiply) raised the worst of three placement seeds from 40.4 to 50.8 MHz, and round three (registered `act_buffer` requests, a split first stage of the descriptor check) to 55.9 MHz. M5's second network is complete on `feat/m5-cifar10`: CIFAR-10 trained from the fast.ai mirror of the dataset, quantized and exported, and bit-exact on the RTL for 100 images; `make ci` runs both networks.
 
 ## Completed
 
@@ -67,7 +67,7 @@ M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bi
   - CIFAR-10 (2026-11-04): `train_lenet.py` also reads the fast.ai mirror (`cifar10.tgz`, one PNG per image) and
     puts its test set in a fixed interleaved order (10 images per class in every 100); float32 63.0% on the 10k
     test set after 20 epochs; int8 61.8% against float32 61.75% on 2000 images; `model/data/cifar10/`
-    committed; `NETS = mnist cifar10`; 24347 cycles per image, 42% of peak.
+    committed; `NETS = mnist cifar10`; 24355 cycles per image (after timing round three), 42% of peak.
 
 - M6 (2026-11-03):
   - Synthesis: `synth/` scripts and `.github/workflows/synth.yml` (sv2v + Yosys `synth_xilinx` with a per-module
@@ -145,6 +145,8 @@ M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bi
 | 2026-11-03 | Verilator 5.020 | Descriptor fetch: `make unit-npu_sequencer`, `make unit-npu_regs` | PASS: 20650 fetched words with 6917 grant stalls; the table walked twice through the read port under host reads; mutations of the grant priority and of the word order fail |
 | 2026-11-03 | Verilator 5.020 | `make clean && make ci` after the descriptor fetch | 16 testbenches pass; MNIST 18723 cycles per image (+11 per layer for the descriptor fetch), array busy 16288 |
 | 2026-11-03 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | `make synth-ecp5` (`synth_ecp5 -abc9`, out-of-context wrapper) | Routed: `d08daa1` 33752 LUT4 cells (40%), 28.8 MHz; `95e6fe1` 42.4 MHz; `cd30631` (router2) 35590 (42%), 17360 FF, 116 MULT18X18D, 80 DP16KD, 34.8 MHz; critical path now the host register read through the descriptor mux |
+| 2026-11-05 | Verilator 5.020 | Registered `act_buffer` requests, split check stage O: unit testbenches, `make clean && make ci` | PASS; mutations (rotation from the wrong stage, wait count of three) fail; MNIST 18755 cycles per image (+1 per layer), array busy 16288 |
+| 2026-11-05 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `93eac9a` | 62.0 / 60.9 / 55.9 MHz, worst 55.9 (was 50.8); xc7 17866 LUT, 14469 FF; ECP5 24516 LUT4 cells (29%) |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `main` (`5cc8e3d`) | 56.2 / 45.9 / 40.4 MHz, three different critical paths |
 | 2026-11-04 | Verilator 5.020 | Registered pool write port, channel mask in the tile queue, two-stage requant multiply: unit testbenches, `make clean && make ci` | PASS; mutations (early capture, off-by-one mask, signed low half) fail; cycle counts unchanged |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `cb95def` | 60.5 / 50.8 / 52.6 MHz, worst 50.8 (was 40.4); xc7 17886 LUT, 14012 FF; ECP5 24247 LUT4 cells (28%) |
@@ -153,13 +155,15 @@ M6 merged, and the descriptor table moved into a 1R1W RAM with per-word valid bi
 | 2026-11-03 | Verilator 5.020 | requant_unit split into 4 stages: `make clean && make ci` | 16 testbenches pass; requant latency checked at 4 cycles on every vector; MNIST cycles unchanged (18747) |
 | 2026-11-04 | numpy 2.5, Pillow 12.3 | `python3 model/train_lenet.py --net cifar10` (fast.ai mirror, channel means 125.3 / 123.0 / 113.9 as published) | float32 test accuracy 62.96% after 20 epochs |
 | 2026-11-04 | Python 3.13 | `python3 model/quantize.py --net cifar10 --report 2000` | int8 program 61.80%, float32 61.75% on the same 2000 images |
+| 2026-11-05 | Verilator 5.020 | `make integ-cifar10` after merging timing round three | PASS: 100 of 100 predictions equal the integer model, 24355 cycles per image (+1 per layer), array busy 21888 |
 | 2026-11-04 | Verilator 5.020 | `make integ-cifar10`, `make clean && make ci` | PASS: 100 of 100 predictions equal the integer model, 59 match the label, 14 layer traces byte-exact, 24347 cycles per image; a program copy with one changed prediction fails; all testbenches and both networks pass |
 | 2026-11-03 | Verilator 5.020 | Pipelined descriptor check: `make unit-npu_sequencer` (2000 descriptors, and 60000 each with seeds 11 and 12), `make clean && make ci` | PASS; a mutation of the error priority fails; MNIST 18747 cycles per image (+3 per layer), array busy 16288 |
 
 ## Next steps
 
-1. Timing: split the descriptor check's stage A, then register the activation buffer's bank addresses (the worst
-   paths of the three-seed sweep, `docs/synthesis.md`).
+1. Timing: the requant shift amount fans out from one register to the eight shifters in every seed (Yosys merges
+   the per-unit copies); duplicate it in a way synthesis keeps, or split the shift over two stages
+   (`docs/synthesis.md`).
 2. Run the unit and integration testbenches with VCS and record the results in the table below.
 
 ## Known limitations

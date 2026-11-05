@@ -18,7 +18,7 @@
 // busy cycles in which array_valid_i was high. All three clear on start.
 //
 // Check order, first hit wins: ERR_BAD_OP, ERR_BAD_PARAM, ERR_BAD_OUT_DIM,
-// ERR_BAD_ADDR. The checks are a three-stage pipeline on the fetched
+// ERR_BAD_ADDR. The checks are a four-stage pipeline on the fetched
 // (registered) descriptor.
 module npu_sequencer
   import npu_pkg::*;
@@ -68,17 +68,30 @@ module npu_sequencer
     return (17'(c) + 17'(ARR_N - 1)) & ~17'(ARR_N - 1);
   endfunction
 
-  // Descriptor checks: one datapath for every op, pipelined over three
+  // Descriptor checks: one datapath for every op, pipelined over four
   // registered stages so that no path holds more than one multiplier or one
   // wide add (the checks run once per layer, CHECK_LAT cycles).
-  //   A  operands that differ between ops (ARGMAX and FC are 1x1 images,
-  //      MAXPOOL halves the size and keeps C_in), the size products, and the
+  //   O  operands that differ between ops (ARGMAX and FC are 1x1 images,
+  //      MAXPOOL halves the size and keeps C_in), the output size, and the
   //      parameter, size and alignment flags
+  //   A  size products (H x W, OH x OW, C_in x K x K)
   //   B  byte counts (size x channels, K_total x padded C_out)
   //   C  end addresses against the buffer sizes, and the error code in the
   //      documented order: BAD_OP, BAD_PARAM, BAD_OUT_DIM, BAD_ADDR
   // All widths are exact, so no sum or product can wrap.
-  localparam int unsigned CHECK_LAT = 3;
+  localparam int unsigned CHECK_LAT = 4;
+
+  typedef struct packed {
+    logic        nop, bad_op, is_mac, is_pool;
+    logic        param_err;            // all parameter checks but the K_total limit
+    logic        dim_err, align_err;
+    logic [15:0] c_in, c_out_eff;
+    logic [16:0] n_pad;
+    logic [5:0]  kk;
+    logic [15:0] in_h, in_w;
+    logic [16:0] oh, ow;
+    logic [31:0] in_base, out_base, w_base, b_base;
+  } chk_o_t;
 
   typedef struct packed {
     logic        nop, bad_op, is_mac, is_pool;
@@ -102,13 +115,11 @@ module npu_sequencer
     logic [31:0] in_base, out_base, w_base, b_base;
   } chk_b_t;
 
-  function automatic chk_a_t check_stage_a(input desc_t d);
-    chk_a_t      a;
+  function automatic chk_o_t check_stage_o(input desc_t d);
+    chk_o_t      a;
     logic        is_conv, is_fc, is_argmax;
     logic [3:0]  k, pad;
-    logic [5:0]  kk;
     logic [15:0] in_h, in_w;
-    logic [16:0] oh, ow;
     // Zero points are int8 by construction and have no further constraint.
     /* verilator lint_off UNUSEDSIGNAL */
     logic [15:0] unused_zp;
@@ -125,22 +136,21 @@ module npu_sequencer
 
     k           = is_conv ? d.k   : 4'd1;
     pad         = is_conv ? d.pad : 4'd0;
-    kk          = 6'(k) * 6'(k);
+    a.kk        = 6'(k) * 6'(k);
     in_h        = (is_fc || is_argmax) ? 16'd1 : d.in_h;
     in_w        = (is_fc || is_argmax) ? 16'd1 : d.in_w;
+    a.in_h      = in_h;
+    a.in_w      = in_w;
     a.c_in      = d.c_in;
     a.c_out_eff = a.is_pool ? d.c_in : d.c_out;
     if (a.is_pool) begin
-      oh = {2'b00, in_h[15:1]};
-      ow = {2'b00, in_w[15:1]};
+      a.oh = {2'b00, in_h[15:1]};
+      a.ow = {2'b00, in_w[15:1]};
     end else begin
-      oh = 17'(in_h) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;   // only used when dim_err is clear
-      ow = 17'(in_w) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;
+      a.oh = 17'(in_h) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;   // only used when dim_err is clear
+      a.ow = 17'(in_w) + 17'(pad) * 17'd2 - 17'(k) + 17'd1;
     end
     a.n_pad   = pad_to_arr(d.c_out);
-    a.k_total = 22'(d.c_in) * 22'(kk);
-    a.in_hw   = 32'(in_h) * 32'(in_w);
-    a.out_hw  = 34'(oh) * 34'(ow);
     a.in_base = d.in_base; a.out_base = d.out_base; a.w_base = d.w_base; a.b_base = d.b_base;
 
     if (is_argmax) begin
@@ -161,6 +171,18 @@ module npu_sequencer
       a.dim_err   = (17'(in_h) + 17'(pad) * 17'd2 < 17'(k)) || (17'(in_w) + 17'(pad) * 17'd2 < 17'(k));
       a.align_err = (d.w_base[2:0] != 3'b000) || (d.b_base[2:0] != 3'b000);   // both 8-byte aligned
     end
+    return a;
+  endfunction
+
+  function automatic chk_a_t check_stage_a(input chk_o_t o);
+    chk_a_t a;
+    a.nop = o.nop; a.bad_op = o.bad_op; a.is_mac = o.is_mac; a.is_pool = o.is_pool;
+    a.param_err = o.param_err; a.dim_err = o.dim_err; a.align_err = o.align_err;
+    a.c_in = o.c_in; a.c_out_eff = o.c_out_eff; a.n_pad = o.n_pad;
+    a.k_total = 22'(o.c_in) * 22'(o.kk);
+    a.in_hw   = 32'(o.in_h) * 32'(o.in_w);
+    a.out_hw  = 34'(o.oh) * 34'(o.ow);
+    a.in_base = o.in_base; a.out_base = o.out_base; a.w_base = o.w_base; a.b_base = o.b_base;
     return a;
   endfunction
 
@@ -243,6 +265,7 @@ module npu_sequencer
 
   // Check pipeline: free running on the fetched descriptor, which is stable
   // from the end of the fetch until the next layer's fetch.
+  chk_o_t chk_o_q;
   chk_a_t chk_a_q;
   chk_b_t chk_b_q;
   err_e   chk_err_q;
@@ -250,11 +273,13 @@ module npu_sequencer
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
+      chk_o_q   <= '0;
       chk_a_q   <= '0;
       chk_b_q   <= '0;
       chk_err_q <= ERR_NONE;
     end else begin
-      chk_a_q   <= check_stage_a(cur_desc_c);
+      chk_o_q   <= check_stage_o(cur_desc_c);
+      chk_a_q   <= check_stage_a(chk_o_q);
       chk_b_q   <= check_stage_b(chk_a_q);
       chk_err_q <= check_stage_c(chk_b_q);
     end

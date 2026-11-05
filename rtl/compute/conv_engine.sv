@@ -95,6 +95,7 @@ module conv_engine
   logic [ABUF_AW-1:0]  col_nt_q;    // out_base + nt * N * OHW
   logic [ABUF_AW-1:0]  col_row_q;   // out_base + nt * N * OHW + oh * OW
   logic [2:0]  pf_cnt_q;    // bias prefetch word counter
+  logic [WBUF_WAW-1:0] pf_addr_q;   // weight word of the next bias read: b_word + nt * BIAS_WORDS + pf_cnt
   logic [5:0]  flush_q;
 
   // Bias banks: [bank][column]
@@ -210,7 +211,7 @@ module conv_engine
       oh_q <= '0; ow_q <= '0; hw_q <= '0; n_tiles_q <= '0; ow_tiles_q <= '0;
       nt_q <= '0; oh_i_q <= '0; owt_q <= '0; ci_q <= '0; kh_q <= '0; kw_q <= '0; kidx_q <= '0;
       ci_off_q <= '0; kh_off_q <= '0; row_base_q <= '0; pf_cnt_q <= '0; flush_q <= '0;
-      pad_w_q <= '0; w_nt_q <= '0; w_ptr_q <= '0; col_nt_q <= '0; col_row_q <= '0;
+      pad_w_q <= '0; w_nt_q <= '0; w_ptr_q <= '0; col_nt_q <= '0; col_row_q <= '0; pf_addr_q <= '0;
       bias_q <= '0; pf_rd_q <= 1'b0; pf_rd_idx_q <= '0;
       g_active_q <= 1'b0; g_first_q <= 1'b0; g_last_q <= 1'b0; g_tile_start_q <= 1'b0;
       g_addr_q <= '0; g_waddr_q <= '0; g_mask_q <= '0; g_col_base_q <= '0; g_ow_mask_q <= '0;
@@ -266,13 +267,19 @@ module conv_engine
           col_row_q  <= out_base_q;
           nt_q <= '0; oh_i_q <= '0; owt_q <= '0;
           pf_cnt_q <= '0;
+          pf_addr_q <= b_word_q;
           state_q <= S_PREFETCH;
         end
 
         S_PREFETCH: begin
           // BIAS_WORDS read cycles (waiting for the previous beat's read to
           // leave the port), then one cycle for the last capture
-          if (pf_issue_c) pf_cnt_q <= pf_cnt_q + 3'd1;
+          // every n_tile reads exactly BIAS_WORDS consecutive words, so the
+          // pointer runs on into the next n_tile's biases without a reload
+          if (pf_issue_c) begin
+            pf_cnt_q  <= pf_cnt_q + 3'd1;
+            pf_addr_q <= pf_addr_q + WBUF_WAW'(1);
+          end
           if (pf_cnt_q == 3'(BIAS_WORDS)) begin
             // start the first tile of this n_tile
             ci_q <= '0; kh_q <= '0; kw_q <= '0; kidx_q <= '0;
@@ -368,8 +375,7 @@ module conv_engine
   assign abuf_rd_en_o   = g_active_q;
   assign abuf_rd_addr_o = g_addr_q;
   assign wbuf_rd_en_o   = g_active_q || pf_issue_c;
-  assign wbuf_rd_addr_o = g_active_q ? g_waddr_q
-                                     : (b_word_q + WBUF_WAW'(32'(nt_q) * 32'(BIAS_WORDS) + 32'(pf_cnt_q)));
+  assign wbuf_rd_addr_o = g_active_q ? g_waddr_q : pf_addr_q;
 
   // ---------------------------------------------------------------------------
   // Alignment of flags / masks with the activation data (ABUF_RD_LAT cycles)

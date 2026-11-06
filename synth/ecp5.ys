@@ -4,5 +4,19 @@
 # ABC flow in Yosys 0.33 (about 30-40% fewer cells in isolated tests).
 read_verilog -sv build/synth/npu_top_ooc.v
 hierarchy -check -top npu_top_ooc
+proc
+
+# Placement constraint: every requant unit keeps its own copy of the layer
+# constants (multiplier, shift amount, output zero point, clamp bounds) at each
+# pipeline stage. The eight copies are identical, so Yosys would merge them
+# into one register per stage that then drives all eight units across the
+# device. Both the shift amount (into the eight 65-bit shifters) and the
+# multiplier (into the eight DSP multiplies) became critical paths that way.
+# This is the open-flow counterpart of a dont_touch / max_fanout constraint;
+# the RTL is unchanged. The count check fails the run if the register names
+# ever change.
+select -assert-count 17 requant_unit/w:s1_mult_q requant_unit/w:s*_shift_q %u requant_unit/w:s3_noshift_q %u requant_unit/w:s*_z_q %u requant_unit/w:s*_min_q %u requant_unit/w:s*_max_q %u %ci1:+$dff,$dffe,$adff,$adffe[Q] requant_unit/c:* %i
+setattr -set keep 1 requant_unit/w:s1_mult_q requant_unit/w:s*_shift_q %u requant_unit/w:s3_noshift_q %u requant_unit/w:s*_z_q %u requant_unit/w:s*_min_q %u requant_unit/w:s*_max_q %u %ci1:+$dff,$dffe,$adff,$adffe[Q] requant_unit/c:* %i
+
 synth_ecp5 -abc9 -top npu_top_ooc -json build/synth/npu_top_ooc_ecp5.json
 tee -o build/synth/ecp5_stat.txt stat

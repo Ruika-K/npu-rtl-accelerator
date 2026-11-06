@@ -63,9 +63,11 @@ module conv_engine
   logic [RQ_SHIFT_W-1:0]   rq_shift_q;
   logic signed [7:0]       z_in_q, z_out_q, act_min_q, act_max_q;
 
-  // Derived, registered in SETUP
+  // Derived, registered in SETUP (kk, k_total, ohw and period: in the setup
+  // product pipeline below)
   logic [16:0]             oh_q, ow_q;        // output size
   logic [31:0]             hw_q, ohw_q;       // H*W, OH*OW
+  logic [7:0]              kk_q;              // K * K
   logic [21:0]             k_total_q;         // C_in * K * K
   logic [12:0]             n_tiles_q;         // ceil(C_out / N)
   logic [13:0]             ow_tiles_q;        // ceil(OW / N)
@@ -93,6 +95,7 @@ module conv_engine
   logic [ABUF_AW-1:0]  col_nt_q;    // out_base + nt * N * OHW
   logic [ABUF_AW-1:0]  col_row_q;   // out_base + nt * N * OHW + oh * OW
   logic [2:0]  pf_cnt_q;    // bias prefetch word counter
+  logic [WBUF_WAW-1:0] pf_addr_q;   // weight word of the next bias read: b_word + nt * BIAS_WORDS + pf_cnt
   logic [5:0]  flush_q;
 
   // Bias banks: [bank][column]
@@ -116,10 +119,8 @@ module conv_engine
   // Setup arithmetic (combinational on the registered parameters)
   // ---------------------------------------------------------------------------
   logic [16:0] oh_c, ow_c;
-  logic [21:0] k_total_c;
   assign oh_c      = 17'(h_q) + 17'(pad_q) * 17'd2 - 17'(k_q) + 17'd1;
   assign ow_c      = 17'(w_q) + 17'(pad_q) * 17'd2 - 17'(k_q) + 17'd1;
-  assign k_total_c = 22'(cin_q) * 22'(k_q) * 22'(k_q);
 
   // Per-beat address and mask (combinational on the counters)
   logic signed [32:0] a_c;            // lane 0 input address, may be negative or past the image
@@ -183,16 +184,34 @@ module conv_engine
   assign unused_a_hi   = a_c[32:ABUF_AW];
   /* verilator lint_on UNUSEDSIGNAL */
 
+  // Setup products, one multiply per stage: K*K, then C_in*K*K and OH*OW,
+  // then max(K_total, N). They are recomputed every cycle from registers that
+  // only change in IDLE and SETUP, and the first beat of a layer is issued at
+  // least BIAS_WORDS + 2 cycles after SETUP (the bias prefetch sits between
+  // them), so all three stages have settled before RUN reads them. Doing the
+  // products in SETUP itself put a multiplier, a second multiplier and a
+  // compare-and-select in one cycle, the longest path of the design on ECP5.
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      kk_q <= '0; k_total_q <= '0; ohw_q <= '0; period_q <= '0;
+    end else begin
+      kk_q      <= 8'(k_q) * 8'(k_q);
+      k_total_q <= 22'(cin_q) * 22'(kk_q);
+      ohw_q     <= 32'(oh_q) * 32'(ow_q);
+      period_q  <= (k_total_q < 22'(N)) ? 22'(N) : k_total_q;
+    end
+  end
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       state_q <= S_IDLE;
       h_q <= '0; w_q <= '0; cin_q <= '0; cout_q <= '0; k_q <= '0; pad_q <= '0;
       in_base_q <= '0; out_base_q <= '0; w_word_q <= '0; b_word_q <= '0;
       rq_mult_q <= '0; rq_shift_q <= '0; z_in_q <= '0; z_out_q <= '0; act_min_q <= '0; act_max_q <= '0;
-      oh_q <= '0; ow_q <= '0; hw_q <= '0; ohw_q <= '0; k_total_q <= '0; n_tiles_q <= '0; ow_tiles_q <= '0; period_q <= '0;
+      oh_q <= '0; ow_q <= '0; hw_q <= '0; n_tiles_q <= '0; ow_tiles_q <= '0;
       nt_q <= '0; oh_i_q <= '0; owt_q <= '0; ci_q <= '0; kh_q <= '0; kw_q <= '0; kidx_q <= '0;
       ci_off_q <= '0; kh_off_q <= '0; row_base_q <= '0; pf_cnt_q <= '0; flush_q <= '0;
-      pad_w_q <= '0; w_nt_q <= '0; w_ptr_q <= '0; col_nt_q <= '0; col_row_q <= '0;
+      pad_w_q <= '0; w_nt_q <= '0; w_ptr_q <= '0; col_nt_q <= '0; col_row_q <= '0; pf_addr_q <= '0;
       bias_q <= '0; pf_rd_q <= 1'b0; pf_rd_idx_q <= '0;
       g_active_q <= 1'b0; g_first_q <= 1'b0; g_last_q <= 1'b0; g_tile_start_q <= 1'b0;
       g_addr_q <= '0; g_waddr_q <= '0; g_mask_q <= '0; g_col_base_q <= '0; g_ow_mask_q <= '0;
@@ -240,24 +259,27 @@ module conv_engine
           oh_q       <= oh_c;
           ow_q       <= ow_c;
           hw_q       <= 32'(h_q) * 32'(w_q);
-          ohw_q      <= 32'(oh_c) * 32'(ow_c);
-          k_total_q  <= k_total_c;
           n_tiles_q  <= 13'((32'(cout_q) + 32'(N - 1)) >> LANE_W);
           ow_tiles_q <= 14'((32'(ow_c) + 32'(N - 1)) >> LANE_W);
-          period_q   <= (k_total_c < 22'(N)) ? 22'(N) : k_total_c;
           pad_w_q    <= 20'(pad_q) * 20'(w_q);
           w_nt_q     <= w_word_q;
           col_nt_q   <= out_base_q;
           col_row_q  <= out_base_q;
           nt_q <= '0; oh_i_q <= '0; owt_q <= '0;
           pf_cnt_q <= '0;
+          pf_addr_q <= b_word_q;
           state_q <= S_PREFETCH;
         end
 
         S_PREFETCH: begin
           // BIAS_WORDS read cycles (waiting for the previous beat's read to
           // leave the port), then one cycle for the last capture
-          if (pf_issue_c) pf_cnt_q <= pf_cnt_q + 3'd1;
+          // every n_tile reads exactly BIAS_WORDS consecutive words, so the
+          // pointer runs on into the next n_tile's biases without a reload
+          if (pf_issue_c) begin
+            pf_cnt_q  <= pf_cnt_q + 3'd1;
+            pf_addr_q <= pf_addr_q + WBUF_WAW'(1);
+          end
           if (pf_cnt_q == 3'(BIAS_WORDS)) begin
             // start the first tile of this n_tile
             ci_q <= '0; kh_q <= '0; kw_q <= '0; kidx_q <= '0;
@@ -353,8 +375,7 @@ module conv_engine
   assign abuf_rd_en_o   = g_active_q;
   assign abuf_rd_addr_o = g_addr_q;
   assign wbuf_rd_en_o   = g_active_q || pf_issue_c;
-  assign wbuf_rd_addr_o = g_active_q ? g_waddr_q
-                                     : (b_word_q + WBUF_WAW'(32'(nt_q) * 32'(BIAS_WORDS) + 32'(pf_cnt_q)));
+  assign wbuf_rd_addr_o = g_active_q ? g_waddr_q : pf_addr_q;
 
   // ---------------------------------------------------------------------------
   // Alignment of flags / masks with the activation data (ABUF_RD_LAT cycles)

@@ -8,13 +8,14 @@ default parameters (`ARR_N = 8`, 32 KB activation buffer, 128 KB weight buffer) 
 
 ## Summary
 
-Core `npu_top` at commit `93eac9a`. ECP5 is routed with nextpnr's router2 for three placement seeds; the Fmax
-column gives the worst and best of the three (see Timing).
+Core `npu_top` at commit `99104df`. ECP5 is routed with nextpnr's router2 for three placement seeds; the Fmax
+column gives the worst and best of the three (see Timing). The ECP5 script keeps each requant unit's own copy
+of the layer constants (ADR-018), which accounts for about 900 of its flip-flops; the xc7 run does not.
 
 | Target | Logic | Flip-flops | Block RAM | Multipliers | Fmax |
 | --- | --- | --- | --- | --- | --- |
-| Xilinx 7-series, `synth_xilinx` (no place and route) | 17866 LUT + 3196 MUXF7/8 | 14469 | 40 RAMB36 + 1 RAMB18 | 111 DSP48E1 | - |
-| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 24516 LUT4 cells (29%) | 13913 (17%) | 81 DP16KD (39%) | 114 MULT18X18D (73%) | 55.9 to 62.0 MHz |
+| Xilinx 7-series, `synth_xilinx` (no place and route) | 17987 LUT + 3329 MUXF7/8 | 14491 | 40 RAMB36 + 1 RAMB18 | 110 DSP48E1 | - |
+| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 27310 LUT4 cells (32%) | 14964 (17%) | 81 DP16KD (39%) | 113 MULT18X18D (72%) | 57.1 to 60.5 MHz |
 
 The ECP5 run places the core inside `synth/npu_top_ooc.sv`, which feeds the 273 input bits from a shift register
 and XOR-reduces the 211 output bits so that the core fits the package pins. The wrapper adds 485 flip-flops and
@@ -59,6 +60,7 @@ commit on the M6 branch; xc7 from the per-module report, ECP5 from nextpnr's dev
 | `75472a4` | Descriptor table in a 1R1W RAM with per-word valid bits (ADR-017) | 18364 | 3277 | 111 | 24970 (29%) | Routed, 56.2 MHz |
 | `cb95def` | Registered pool write port, channel mask in the tile queue, requant multiply in two halves | 17886 | 3216 | 111 | 24247 (28%) | Routed, 50.8 to 60.5 MHz over three seeds |
 | `93eac9a` | Registered `act_buffer` requests, descriptor check stage O split from the products | 17866 | 3196 | 111 | 24516 (29%) | Routed, 55.9 to 62.0 MHz over three seeds |
+| `99104df` | Requant layer constants kept per unit (ADR-018), `conv_engine` setup products pipelined, running bias prefetch pointer | 17987 | 3329 | 110 | 27310 (32%) | Routed, 57.1 to 60.5 MHz over three seeds |
 
 What each step taught:
 
@@ -107,6 +109,10 @@ fix is judged by the worst of the three, not by one run.
 | Registered pool write port only (`51b842d`) | 49.2 MHz: requant shift-and-saturate stage | 39.2 MHz: drain side as before | 40.9 MHz: drain side as before | 39.2 MHz |
 | Round two (`cb95def`) | 60.5 MHz: descriptor check stage A | 50.8 MHz: `act_buffer` read address through the port mux and the bank row increment | 52.6 MHz: descriptor check stage A | 50.8 MHz |
 | Round three (`93eac9a`) | 62.0 MHz | 60.9 MHz | 55.9 MHz | 55.9 MHz |
+| Round four, shift amount kept per unit (`b6884bf`) | 60.0 MHz: `conv_engine` setup, C_in * K * K and the tile-period select | 53.6 MHz: the same path | Not finished: router2 still running after 70 minutes, superseded | - |
+| Round four, setup products pipelined (`f46e958`) | 59.8 MHz: pool read address into the `act_buffer` bank rows (12.3 ns routing) | 56.0 MHz: descriptor RAM port select in `npu_regs` | 54.9 MHz: the requant multiplier, again one merged register for eight units | 54.9 MHz |
+| Round four, all requant constants kept (`d64fd0c`) | 62.7 MHz: descriptor RAM port select | 50.2 MHz: bias prefetch address adder into the weight SRAM address pins (13.5 ns routing) | 64.3 MHz: requant shift and saturate, inside one unit | 50.2 MHz |
+| Round four (`99104df`) | 57.1 MHz: requant shift and saturate, inside one unit | 60.5 MHz: requant low-half multiply, inside one unit | 57.6 MHz: requant shift and saturate, inside one unit | 57.1 MHz |
 
 The second row is the lesson: registering the pool output was right, but alone it did not move the worst case,
 because two other paths were nearly as long. Round two fixed those as well, at no cycle cost:
@@ -129,11 +135,30 @@ Reading the timing:
   enables next to its SRAMs and makes the lane rotation after them combinational, so the read latency stays two
   cycles and no engine changes. The descriptor check's first stage was split into operand selection and the
   size products (one more cycle per layer).
-- In all three round-three seeds the critical path is now the same one: requant stage 3, from the shift-amount
-  register into the eight 65-bit shifters (15.8 to 17.7 ns, 12.6 to 14.2 ns of it routing). The eight units
-  hold identical copies of that register, Yosys merges them into one, and the single register then drives all
-  eight shifters spread around the DSP columns. Fixing it needs either register duplication that synthesis keeps
-  (a tool-specific attribute) or a shift split over two stages; both are recorded as next steps.
+- After round three every seed failed on the same path: requant stage 3, from the shift-amount register into
+  the eight 65-bit shifters (15.8 to 17.7 ns, 12.6 to 14.2 ns of it routing). The eight units hold identical
+  copies of that register, Yosys merges them into one, and the single register drove all eight shifters spread
+  around the DSP columns.
+- Round four took four commits, each judged by a full three-seed sweep:
+  - The ECP5 script marks the requant shift-amount registers `keep` after `proc` (ADR-018). That path left
+    both seeds that finished, and the next one was `conv_engine`'s SETUP cycle: C_in * K * K (two chained multiplies), then
+    max(K_total, N), about 17 ns.
+  - Those products now come from a three-stage pipeline that recomputes them every cycle (K * K; C_in * K * K
+    and OH * OW; the tile period). Their inputs change only in IDLE and SETUP, and the bias prefetch puts at
+    least six cycles between SETUP and the first beat, so no cycle count changed.
+  - The next seed failed on the requant multiplier, merged into one register in the same way. Rather than fix
+    the members of that class one at a time, the `keep` rule now covers all 17 layer-constant registers of
+    `requant_unit` (multiplier, shift amount, zero point and clamp bounds at every stage), for about 900
+    flip-flops.
+  - One seed then exposed the bias prefetch address, an adder `b_word + nt * 4 + pf_cnt` in front of the weight
+    buffer's port mux and the address pins of its block RAMs. Every n_tile reads exactly four consecutive
+    words, so a pointer loaded in SETUP and incremented per read gives the same addresses without the adder.
+  - The worst seed is now 57.1 MHz (was 55.9) and the spread is the narrowest so far (57.1 to 60.5 MHz). All
+    three critical paths are inside one requant unit: the shift-and-saturate stage and the low-half multiply,
+    still 11.3 to 12.6 ns of routing each. The next step there is a shift over two stages.
+- The ECP5 cell count rose from 24655 to 27310 with the last commit, while the xc7 count for the same change
+  moved by 57 LUTs. That points at the ECP5 mapping rather than the RTL (Yosys 0.33's ABC9 aborts one call in
+  every run, see above); the exact cause has not been isolated.
 - These are FPGA numbers from an open flow. The same RTL in a standard-cell process would close far higher;
   the value here is that every path has been through a real placer and router and the worst ones are known.
 

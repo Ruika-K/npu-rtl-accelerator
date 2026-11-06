@@ -121,8 +121,8 @@ Measured by `.github/workflows/synth.yml` on every push; details and the history
 
 | Target | Logic | Flip-flops | Block RAM | Multipliers | Fmax |
 | --- | --- | --- | --- | --- | --- |
-| Xilinx 7-series, Yosys `synth_xilinx` | 16.1K LUT + 2.0K MUXF | 15.0K | 40 RAMB36 + 1 RAMB18 | 110 DSP48E1 | - |
-| Lattice ECP5-85k, Yosys + nextpnr, placed and routed | 21.9K LUT4 (26%) | 15.4K | 81 DP16KD | 113 MULT18X18D | 58.5 to 67.2 MHz (3 seeds) |
+| Xilinx 7-series, Yosys `synth_xilinx` | 16.1K LUT + 1.9K MUXF | 15.0K | 40 RAMB36 + 1 RAMB18 | 110 DSP48E1 | - |
+| Lattice ECP5-85k, Yosys + nextpnr, placed and routed | 21.7K LUT4 (25%) | 15.4K | 81 DP16KD | 113 MULT18X18D | 58.8 to 60.6 MHz (3 seeds) |
 
 The first per-module report put the core at 51K LUTs, two thirds of it in the sequencer and the register file:
 variable-index selects of wide arrays, which sv2v and Yosys turn into barrel shifters. Rewriting those selects,

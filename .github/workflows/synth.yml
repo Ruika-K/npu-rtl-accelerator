@@ -42,7 +42,7 @@ jobs:
     # seeds run in parallel and each reports its own number and critical path.
     name: ECP5 place and route (nextpnr, seed ${{ matrix.seed }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -60,7 +60,17 @@ jobs:
           sv2v --version && yosys -V && nextpnr-ecp5 --version
 
       - name: Synthesize, place and route
-        run: make synth-ecp5 PNR_SEED=${{ matrix.seed }}
+        # A placement router2 cannot converge on otherwise runs until the job
+        # limit. Normal runs take 7 to 12 minutes, so stop at 45 and say so; the
+        # job still fails, since that seed has no timing result.
+        run: |
+          timeout 45m make synth-ecp5 PNR_SEED=${{ matrix.seed }} || {
+            rc=$?
+            if [ "$rc" -eq 124 ]; then
+              echo "::error::seed ${{ matrix.seed }}: place and route did not finish within 45 minutes"
+            fi
+            exit "$rc"
+          }
 
       - name: Raw critical path
         # The summary labels each segment with a signal name, which can be an

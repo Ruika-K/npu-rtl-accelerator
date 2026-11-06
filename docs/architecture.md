@@ -391,9 +391,8 @@ restarts the drain and corrupts the previous tile; that is a producer bug, not a
 
 Inputs `acc_i[31:0]`, `bias_i[31:0]`, `mult_i[31:0]`, `shift_i[5:0]`, `z_out_i[7:0]`, `act_min_i[7:0]`,
 `act_max_i[7:0]`, `valid_i`; outputs `q_o[7:0]`, `valid_o`. Fixed 6-stage pipeline (`RQ_PIPE_LAT`) split along
-the formula in section 3.3: S1 does the 33-bit bias add, S2a the four partial products of the multiply (the sum
-and the multiplier split at bits 17 and 16, so each product fits one 18 x 18 multiplier), S2b their sum (and
-shift-1 next to it), S3a and S3b the shift by shift-1 with saturation to 14 bits (S3a shifts by
+the formula in section 3.3: S1 does the 33-bit bias add, S2a the two 33 x 16-bit halves of the multiply, S2b
+their sum (and shift-1 next to it), S3a and S3b the shift by shift-1 with saturation to 14 bits (S3a shifts by
 the multiple of 8 and keeps 21 low bits plus a range flag, S3b shifts by the remaining 0..7), S4 the final
 rounding step, zero-point add and clamp (exactly equal to the formula; the arguments are in the module header).
 `valid_o` is exactly `valid_i` delayed by 6 cycles; data registers only toggle when valid. The extra stages came

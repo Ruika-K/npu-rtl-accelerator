@@ -76,6 +76,14 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Raw critical path
+        # The summary labels each segment with a signal name, which can be an
+        # arbitrary neighbour inside a mapped cone; the raw report has the cells
+        # and the placement coordinates of every hop.
+        if: always()
+        run: |
+          awk '/Critical path report for clock/{n=1; buf=""} n{buf=buf $0 "\n"} n && /ns logic, .* ns routing/{last=buf; n=0} END{printf "%s", last}' build/synth/nextpnr.log
+
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4

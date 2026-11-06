@@ -5,12 +5,12 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 ## Current milestone
 
 All milestones M1 to M6 are merged, both networks (MNIST and CIFAR-10) run bit-exact in `make ci`, and the
-work is now timing closure on the open ECP5 flow, judged by the worst of three placement seeds. The descriptor
-table in a RAM (ADR-017) took ECP5 from 34.8 to 56.2 MHz; rounds two to four raised the worst seed from 40.4 to
-57.1 MHz. Round five (branch `perf/requant-shift-split`) splits the requant shift over two stages (latency 6,
-flush window derived from the latencies, no cycle count changed), keeps the current layer's cycle count in a
-local register instead of a loop through all sixteen counters, and makes the synthesis report list the source
-lines behind the critical path: worst seed 58.5 MHz, best 67.2 MHz, ECP5 logic 26% of the device.
+work has been timing closure on the open ECP5 flow, judged by the worst of three placement seeds. The descriptor
+table in a RAM (ADR-017) took ECP5 from 34.8 to 56.2 MHz; rounds two to five raised the worst seed from 40.4 to
+58.5 MHz. Round six (branch `perf/dsp-split-decode`) decodes the register file's address windows with equality
+tests (worst seed 58.8 MHz, 58.8 to 60.6 MHz over three seeds, ECP5 logic 25%), tried and reverted a requant
+multiply split into DSP-sized products, and bounds a stalled place and route at 45 minutes. Every remaining
+path is mostly routing and they move between blocks from seed to seed, so the RTL pipelining work stops here.
 
 ## Completed
 
@@ -100,6 +100,9 @@ lines behind the critical path: worst seed 58.5 MHz, best 67.2 MHz, ECP5 logic 2
   - Timing round five (2026-11-06): requant shift over two stages (RQ_PIPE_LAT 6), `conv_engine` flush window
     `2N + ABUF_RD_LAT + RQ_PIPE_LAT`, the current layer's cycle count in a local register, critical-path source
     lines and raw path in the synthesis report. ECP5 worst seed 57.1 -> 58.5 MHz; xc7 18.0K -> 16.1K LUT.
+  - Timing round six (2026-11-06): register-file address windows decoded with equality tests only (exact
+    for any base and size); a requant multiply split into four DSP-sized products, measured and reverted; place
+    and route stopped after 45 minutes. ECP5 worst seed 58.5 -> 58.8 MHz.
 
 ## Milestone plan
 
@@ -165,6 +168,9 @@ lines behind the critical path: worst seed 58.5 MHz, best 67.2 MHz, ECP5 logic 2
 | 2026-11-06 | Verilator 5.020, Python 3.13 | Requant shift over two stages: `make clean && make ci`, an off-line check, mutations | PASS, MNIST 18755 and CIFAR-10 24355 cycles per image (unchanged); the two-step saturated value equals the one-step value on 491164 cases (every shift amount, every boundary); dropping the range flag, a logical fine shift, the sign from the low part, wrong fine-shift bits, no room for the fine shift, and a flush window one cycle short each fail; the low part one bit short survives, an equivalent mutant (it only changes values that clamp anyway) |
 | 2026-11-06 | Verilator 5.020 | Local layer cycle count: `make ci`, mutations | PASS, per-layer counts unchanged; a count that runs on across layers, restarts at 1, or is not cleared at START fails `npu_sequencer_tb` |
 | 2026-11-06 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweeps of `dc3b7cc` and `1e543d1` | Worst 56.0, then 58.5 MHz; `1e543d1`: 67.2 / 58.5 / 58.8 MHz, xc7 16112 LUT, 2040 MUXF, 14971 FF; ECP5 21910 LUT4 cells (26%), 15437 FF |
+| 2026-11-06 | Verilator 5.020 | Address windows by equality: exhaustive comparison with the old decode, `make ci`, mutations | 1064960 comparisons agree (all 2^20 addresses, all 4096 register offsets), also with 24 KB and 96 KB buffers; all testbenches pass; a descriptor window one granule short, a logits window without its first granule, a halved register space, or a descriptor offset without its low bits fails `npu_regs_tb` |
+| 2026-11-06 | Verilator 5.020 | Four DSP-sized partial products (reverted): `make ci`, mutations | PASS, cycle counts unchanged; the low sum part read as signed, the low-low term sign-extended, or the weights 2^16 and 2^17 swapped fail `requant_unit_tb` |
+| 2026-11-06 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweeps of `b9210b7` and `a1352bc` | `b9210b7`: 59.4 / 58.8 / 60.6 MHz, xc7 16050 LUT, 1936 MUXF; ECP5 21653 LUT4 cells (25%). `a1352bc`: seed 1 did not finish routing in two hours, seeds 2 and 3 at 59.0 and 58.2 MHz; reverted |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `main` (`5cc8e3d`) | 56.2 / 45.9 / 40.4 MHz, three different critical paths |
 | 2026-11-04 | Verilator 5.020 | Registered pool write port, channel mask in the tile queue, two-stage requant multiply: unit testbenches, `make clean && make ci` | PASS; mutations (early capture, off-by-one mask, signed low half) fail; cycle counts unchanged |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `cb95def` | 60.5 / 50.8 / 52.6 MHz, worst 50.8 (was 40.4); xc7 17886 LUT, 14012 FF; ECP5 24247 LUT4 cells (28%) |
@@ -179,11 +185,10 @@ lines behind the critical path: worst seed 58.5 MHz, best 67.2 MHz, ECP5 logic 2
 
 ## Next steps
 
-1. Timing: two seeds fail in the requant multiply (`s1_sum_q` into the DSP halves, about 5 ns of routing before
-   the DSP), one on the host read address decode into the descriptor RAM (`docs/synthesis.md`). Candidates:
-   register the multiply's operands next to the DSPs (the MULT18X18D input registers), and decode the host
-   request's target one cycle earlier.
-2. Run the unit and integration testbenches with VCS and record the results in the table below.
+1. Run the unit and integration testbenches with VCS and record the results in the table below.
+2. Timing, if more is wanted: the remaining paths are 11 to 14 ns of routing in different blocks per seed
+   (`docs/synthesis.md`). The next levers are physical: duplicate the buffer enables and addresses per group of
+   block RAMs, or constrain placement; RTL pipelining has stopped paying for itself.
 
 ## Known limitations
 

@@ -8,14 +8,14 @@ default parameters (`ARR_N = 8`, 32 KB activation buffer, 128 KB weight buffer) 
 
 ## Summary
 
-Core `npu_top` at commit `1e543d1`. ECP5 is routed with nextpnr's router2 for three placement seeds; the Fmax
+Core `npu_top` at commit `b9210b7`. ECP5 is routed with nextpnr's router2 for three placement seeds; the Fmax
 column gives the worst and best of the three (see Timing). The ECP5 script keeps each requant unit's own copy
 of the layer constants (ADR-018), which accounts for about 900 of its flip-flops; the xc7 run does not.
 
 | Target | Logic | Flip-flops | Block RAM | Multipliers | Fmax |
 | --- | --- | --- | --- | --- | --- |
-| Xilinx 7-series, `synth_xilinx` (no place and route) | 16112 LUT + 2040 MUXF7/8 | 14971 | 40 RAMB36 + 1 RAMB18 | 110 DSP48E1 | - |
-| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 21910 LUT4 cells (26%) | 15437 (18%) | 81 DP16KD (39%) | 113 MULT18X18D (72%) | 58.5 to 67.2 MHz |
+| Xilinx 7-series, `synth_xilinx` (no place and route) | 16050 LUT + 1936 MUXF7/8 | 14971 | 40 RAMB36 + 1 RAMB18 | 110 DSP48E1 | - |
+| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 21653 LUT4 cells (25%) | 15437 (18%) | 81 DP16KD (39%) | 113 MULT18X18D (72%) | 58.8 to 60.6 MHz |
 
 The ECP5 run places the core inside `synth/npu_top_ooc.sv`, which feeds the 273 input bits from a shift register
 and XOR-reduces the 211 output bits so that the core fits the package pins. The wrapper adds 485 flip-flops and
@@ -62,6 +62,7 @@ commit on the M6 branch; xc7 from the per-module report, ECP5 from nextpnr's dev
 | `93eac9a` | Registered `act_buffer` requests, descriptor check stage O split from the products | 17866 | 3196 | 111 | 24516 (29%) | Routed, 55.9 to 62.0 MHz over three seeds |
 | `99104df` | Requant layer constants kept per unit (ADR-018), `conv_engine` setup products pipelined, running bias prefetch pointer | 17987 | 3329 | 110 | 27310 (32%) | Routed, 57.1 to 60.5 MHz over three seeds |
 | `1e543d1` | Requant shift over two stages, current layer's cycle count in a local register | 16112 | 2040 | 110 | 21910 (26%) | Routed, 58.5 to 67.2 MHz over three seeds |
+| `b9210b7` | Register-file address windows decoded with equality tests | 16050 | 1936 | 110 | 21653 (25%) | Routed, 58.8 to 60.6 MHz over three seeds |
 
 What each step taught:
 
@@ -116,6 +117,8 @@ fix is judged by the worst of the three, not by one run.
 | Round four (`99104df`) | 57.1 MHz: requant shift and saturate, inside one unit | 60.5 MHz: requant low-half multiply, inside one unit | 57.6 MHz: requant shift and saturate, inside one unit | 57.1 MHz |
 | Round five, shift over two stages (`dc3b7cc`) | 56.0 MHz: the per-layer cycle counter loop in `npu_sequencer` (labelled with AXI and register-file signals, see below) | 65.8 MHz: the same path | 60.9 MHz: the same path | 56.0 MHz |
 | Round five (`1e543d1`) | 67.2 MHz: requant low-half multiply, inside one unit | 58.5 MHz: host read address decode into the descriptor RAM | 58.8 MHz: requant high-half multiply, inside one unit | 58.5 MHz |
+| Round six, address windows by equality (`b9210b7`) | 59.4 MHz: requant low-half multiply | 58.8 MHz: host register read mux into its output register (all LUTs and routing) | 60.6 MHz: requant high-half multiply | 58.8 MHz |
+| Round six, four DSP-sized partial products (`a1352bc`, reverted) | Not finished: router2 still running when the job limit stopped it after two hours | 59.0 MHz: the weight buffer's read enable into the clock enables of its block RAMs (14.3 ns routing) | 58.2 MHz: requant stage 1, bias select and add | - |
 
 The second row is the lesson: registering the pool output was right, but alone it did not move the worst case,
 because two other paths were nearly as long. Round two fixed those as well, at no cycle cost:
@@ -182,6 +185,27 @@ Reading the timing:
   - The worst seed is 58.5 MHz (was 57.1), the best 67.2 MHz, and the ECP5 logic is down to 26% of the device.
     Two seeds now fail in the requant multiply (`s1_sum_q` into the DSP halves, about 5 ns of routing before
     the DSP), the third on the host read address decode into the descriptor RAM.
+- Round six took one fix, one negative result and a flow fix:
+  - Yosys 0.33 maps some magnitude compares against constants to carry chains on ECP5 and folds others into a
+    LUT (in isolated tests `a < 20'h01000` became 10 CCU2C cells and the 12-bit logits-window test 6, while the
+    12-bit descriptor-window test folded into one LUT). The
+    register file now decodes every address window with equality tests: a window is a run of aligned granules
+    (the lowest set bit of base | size), one compare each, which is exact for any base and size. An exhaustive
+    comparison with the old decode over all 2^20 addresses agrees, also for non-power-of-two buffers. The
+    descriptor-RAM path left the reports, and the worst seed moved from 58.5 to 58.8 MHz with the narrowest
+    spread so far (58.8 to 60.6 MHz).
+  - Splitting the requant multiply into four products that each fit one 18 x 18 multiplier (registered at
+    the DSPs, summed in stage 2b, same latency) removed the multiply paths, but the paths behind them were as
+    long: the weight buffer's read enable fanning out to its block RAMs, the stage-1 bias select and add. And
+    one seed did not finish routing: router2 kept going until the two-hour job limit, the second such stall on
+    this design. By the worst-seed rule that is no improvement, at 264 more flip-flops, so it was reverted.
+    The workflow now stops a place and route after 45 minutes with an error naming the seed.
+- Where this leaves timing: after six rounds every remaining critical path is 13 to 16 ns of which 11 to 14 ns
+  is routing, and the paths sit in different blocks from seed to seed (the requant multiply, the register read
+  mux, the buffers' address and enable fan-out). The design spreads over most of the device's multipliers and
+  block RAM, so the long wires are structural. Further gains would come from physical measures, such as
+  duplicating the buffer enables and addresses per group of block RAMs or constraining placement, rather than
+  from more pipelining.
 - These are FPGA numbers from an open flow. The same RTL in a standard-cell process would close far higher;
   the value here is that every path has been through a real placer and router and the worst ones are known.
 

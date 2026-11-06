@@ -3,7 +3,11 @@
 
 The critical path is printed one line per run of consecutive cells that belong
 to the same RTL signal, so the modules and signals on the path are readable.
-Usage: nextpnr_summary.py build/synth/nextpnr.log
+Those labels come from the names Yosys and nextpnr give the cells, which inside a
+mapped cone can be an arbitrary neighbour; given the synthesized Verilog as a
+second argument, the script also lists the source lines the path's cells were
+built from, each with its module.
+Usage: nextpnr_summary.py build/synth/nextpnr.log [build/synth/npu_top_ooc.v]
 """
 import re
 import sys
@@ -27,6 +31,26 @@ def signal_of(cell):
         stem = stem[: m.start()]
     stem = stem.split("$")[0]
     return path or "(top)", stem or leaf
+
+
+def print_sources(refs, src):
+    """Print each referenced line of the synthesized Verilog with its module."""
+    try:
+        code = open(src, encoding="utf-8", errors="replace").read().splitlines()
+    except OSError:
+        return
+    print("Source lines of the path's cells (module, line in %s):" % src)
+    for line in refs:
+        if not 1 <= line <= len(code):
+            continue
+        module = "?"
+        for k in range(line - 1, -1, -1):
+            m = re.match(r"\s*module\s+(\w+)", code[k])
+            if m:
+                module = m.group(1)
+                break
+        text = " ".join(code[line - 1].split())
+        print("  %-18s %6d  %s" % (module, line, text[:110]))
 
 
 def main():
@@ -58,10 +82,18 @@ def main():
     steps = []    # [label, total]
     start_cell = end_cell = split = ""
     cur_cell = ""
+    refs = []     # source lines of the synthesized design named by "Defined in"
+    src = sys.argv[2] if len(sys.argv) > 2 else ""
     for l in text[i + 2 :]:
         if re.match(r"^[\d.]+ ns logic, [\d.]+ ns routing", l.strip()):
             split = l.strip()
             break
+        if src:
+            m = re.match(r"^\s*(\S+):(\d+)\.\d+-\d+\.\d+$", l)
+            if m and m.group(1).endswith(src.split("/")[-1]) and int(m.group(2)) not in refs:
+                refs.append(int(m.group(2)))
+            if m:
+                continue
         m = re.match(r"^\s*([\d.]+)\s+([\d.]+)\s+Source\s+(\S+)", l)
         if m:
             cur_cell = m.group(3)
@@ -96,6 +128,8 @@ def main():
     print(f"  to   {end_cell}")
     if split:
         print(f"  {split}")
+    if src and refs:
+        print_sources(refs, src)
 
 
 if __name__ == "__main__":

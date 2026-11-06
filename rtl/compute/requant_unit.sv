@@ -4,8 +4,8 @@
 //
 // Implements docs/architecture.md section 3.3 as a fixed 6-stage pipeline:
 //   S1  sum     = acc + bias                                   (33-bit signed)
-//   S2a lo      = sum * mult[15:0], hi = sum * mult[31:16]     (two halves)
-//   S2b prod    = hi * 2^16 + lo  ( = sum * mult)              (65-bit signed)
+//   S2a four 18 x 18-sized partial products of sum and mult   (one DSP each)
+//   S2b prod    = their sum ( = sum * mult)                    (65-bit signed)
 //   S3a t       = prod >>> 8c, where shift-1 = 8c + f          (kept: 21 low bits, range flag)
 //   S3b k       = sat(t >>> f) = sat(prod >>> (shift-1))       (14-bit signed)
 //   S4  rounded = (k + 1) >>> 1, i.e. (prod + 2^(shift-1)) >>> shift (round half up)
@@ -85,30 +85,47 @@ module requant_unit
   end
 
   // ---------------------------------------------------------------------------
-  // Stage 2a: the product in two halves. mult = mult[31:16] * 2^16 + mult[15:0]
-  // with the high half signed and the low half unsigned, so each half is a
-  // 33 x 16-bit product and stage 2b only adds them.
+  // Stage 2a: four partial products, each the size of one 18 x 18 multiplier.
+  // sum = sH * 2^17 + sL and mult = mH * 2^16 + mL, with the low parts unsigned
+  // and the high parts signed, so
+  //   sum * mult = sH*mH * 2^33 + sH*mL * 2^17 + sL*mH * 2^16 + sL*mL.
+  // Each product maps to one DSP and is registered at its output; stage 2b adds
+  // them. (Two 33 x 16 halves needed two DSPs each plus a carry chain to merge
+  // them in this stage, the critical path of two seeds.)
   // ---------------------------------------------------------------------------
-  localparam int unsigned PLO_W = SUM_W + 17;    // sum * mult[15:0]
-  localparam int unsigned PHI_W = SUM_W + 16;    // sum * mult[31:16]
-  logic signed [PLO_W-1:0] plo_c;
-  logic signed [PHI_W-1:0] phi_c;
-  assign plo_c = $signed({{17{s1_sum_q[SUM_W-1]}}, s1_sum_q})
-               * $signed({{(PLO_W-16){1'b0}}, s1_mult_q[15:0]});
-  assign phi_c = $signed({{16{s1_sum_q[SUM_W-1]}}, s1_sum_q})
-               * $signed({{SUM_W{s1_mult_q[ACC_W-1]}}, s1_mult_q[ACC_W-1:16]});
+  logic        [16:0] s_lo_c;   // sum[16:0], unsigned
+  logic signed [15:0] s_hi_c;   // sum[32:17]
+  logic        [15:0] m_lo_c;   // mult[15:0], unsigned
+  logic signed [15:0] m_hi_c;   // mult[31:16]
+  assign s_lo_c = s1_sum_q[16:0];
+  assign s_hi_c = s1_sum_q[SUM_W-1:17];
+  assign m_lo_c = s1_mult_q[15:0];
+  assign m_hi_c = s1_mult_q[ACC_W-1:16];
+
+  logic        [32:0] pll_c;    // sL * mL, 17 x 16 unsigned
+  logic signed [33:0] plh_c;    // sL * mH
+  logic signed [32:0] phl_c;    // sH * mL
+  logic signed [31:0] phh_c;    // sH * mH
+  assign pll_c = s_lo_c * m_lo_c;
+  assign plh_c = $signed({1'b0, s_lo_c}) * m_hi_c;
+  assign phl_c = s_hi_c * $signed({1'b0, m_lo_c});
+  assign phh_c = s_hi_c * m_hi_c;
 
   logic                      s2a_valid_q;
-  logic signed [PLO_W-1:0]   s2a_lo_q;
-  logic signed [PHI_W-1:0]   s2a_hi_q;
+  logic        [32:0]        s2a_ll_q;
+  logic signed [33:0]        s2a_lh_q;
+  logic signed [32:0]        s2a_hl_q;
+  logic signed [31:0]        s2a_hh_q;
   logic [RQ_SHIFT_W-1:0]     s2a_shift_q;
   logic signed [ACT_W-1:0]   s2a_z_q, s2a_min_q, s2a_max_q;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       s2a_valid_q <= 1'b0;
-      s2a_lo_q    <= '0;
-      s2a_hi_q    <= '0;
+      s2a_ll_q    <= '0;
+      s2a_lh_q    <= '0;
+      s2a_hl_q    <= '0;
+      s2a_hh_q    <= '0;
       s2a_shift_q <= '0;
       s2a_z_q     <= '0;
       s2a_min_q   <= '0;
@@ -116,8 +133,10 @@ module requant_unit
     end else begin
       s2a_valid_q <= s1_valid_q;
       if (s1_valid_q) begin
-        s2a_lo_q    <= plo_c;
-        s2a_hi_q    <= phi_c;
+        s2a_ll_q    <= pll_c;
+        s2a_lh_q    <= plh_c;
+        s2a_hl_q    <= phl_c;
+        s2a_hh_q    <= phh_c;
         s2a_shift_q <= s1_shift_q;
         s2a_z_q     <= s1_z_q;
         s2a_min_q   <= s1_min_q;
@@ -127,12 +146,14 @@ module requant_unit
   end
 
   // ---------------------------------------------------------------------------
-  // Stage 2b: prod = hi * 2^16 + lo; the shift amount becomes shift - 1 (0 when
-  // shift is 0) and a no-shift flag, next to the add rather than after it
+  // Stage 2b: prod = the sum of the four partial products; the shift amount
+  // becomes shift - 1 (0 when shift is 0) and a no-shift flag, next to the add
+  // rather than after it. Every term is extended to MUL_W bits (sign or zero by
+  // its type) before the add, so the sum is exact modulo 2^MUL_W.
   // ---------------------------------------------------------------------------
   logic signed [MUL_W-1:0] prod_c;
-  assign prod_c = $signed({s2a_hi_q, 16'h0000})
-                + $signed({{(MUL_W-PLO_W){s2a_lo_q[PLO_W-1]}}, s2a_lo_q});
+  assign prod_c = $signed((MUL_W'(s2a_hh_q) << 33) + (MUL_W'(s2a_hl_q) << 17)
+                        + (MUL_W'(s2a_lh_q) << 16) + MUL_W'(s2a_ll_q));
 
   logic                      s2_valid_q;
   logic signed [MUL_W-1:0]  s2_prod_q;

@@ -12,7 +12,10 @@ make synth-ecp5     # sv2v + yosys synth_ecp5 + nextpnr-ecp5 --85k: build/synth/
 
 - `stat_table.py` turns the non-flattened xc7 report into a per-module table (cells include submodules).
 - `nextpnr_summary.py` prints the ECP5 utilisation, the post-route Fmax and the critical path, one line
-  per RTL signal on the path.
+  per RTL signal on the path. The signal names come from the cell names, which inside a mapped cone can be an
+  arbitrary neighbour, so given the synthesized Verilog it also lists the source lines (with their module)
+  that the path's cells were built from; the workflow additionally prints the raw path with the placement
+  coordinates of every hop.
 - `npu_top_ooc.sv` is the out-of-context wrapper used for ECP5 place and route. `npu_top` has 273 input and
   211 output bits, more than any ECP5 package bonds; the wrapper feeds every input from a shift register on
   one pin and XOR-reduces every registered output onto another, so no logic is removed, the clock stays on a

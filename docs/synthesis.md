@@ -8,14 +8,14 @@ default parameters (`ARR_N = 8`, 32 KB activation buffer, 128 KB weight buffer) 
 
 ## Summary
 
-Core `npu_top` at commit `99104df`. ECP5 is routed with nextpnr's router2 for three placement seeds; the Fmax
+Core `npu_top` at commit `1e543d1`. ECP5 is routed with nextpnr's router2 for three placement seeds; the Fmax
 column gives the worst and best of the three (see Timing). The ECP5 script keeps each requant unit's own copy
 of the layer constants (ADR-018), which accounts for about 900 of its flip-flops; the xc7 run does not.
 
 | Target | Logic | Flip-flops | Block RAM | Multipliers | Fmax |
 | --- | --- | --- | --- | --- | --- |
-| Xilinx 7-series, `synth_xilinx` (no place and route) | 17987 LUT + 3329 MUXF7/8 | 14491 | 40 RAMB36 + 1 RAMB18 | 110 DSP48E1 | - |
-| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 27310 LUT4 cells (32%) | 14964 (17%) | 81 DP16KD (39%) | 113 MULT18X18D (72%) | 57.1 to 60.5 MHz |
+| Xilinx 7-series, `synth_xilinx` (no place and route) | 16112 LUT + 2040 MUXF7/8 | 14971 | 40 RAMB36 + 1 RAMB18 | 110 DSP48E1 | - |
+| Lattice ECP5-85k (LFE5U-85F, speed 8), `synth_ecp5 -abc9` + nextpnr-ecp5 | 21910 LUT4 cells (26%) | 15437 (18%) | 81 DP16KD (39%) | 113 MULT18X18D (72%) | 58.5 to 67.2 MHz |
 
 The ECP5 run places the core inside `synth/npu_top_ooc.sv`, which feeds the 273 input bits from a shift register
 and XOR-reduces the 211 output bits so that the core fits the package pins. The wrapper adds 485 flip-flops and
@@ -61,6 +61,7 @@ commit on the M6 branch; xc7 from the per-module report, ECP5 from nextpnr's dev
 | `cb95def` | Registered pool write port, channel mask in the tile queue, requant multiply in two halves | 17886 | 3216 | 111 | 24247 (28%) | Routed, 50.8 to 60.5 MHz over three seeds |
 | `93eac9a` | Registered `act_buffer` requests, descriptor check stage O split from the products | 17866 | 3196 | 111 | 24516 (29%) | Routed, 55.9 to 62.0 MHz over three seeds |
 | `99104df` | Requant layer constants kept per unit (ADR-018), `conv_engine` setup products pipelined, running bias prefetch pointer | 17987 | 3329 | 110 | 27310 (32%) | Routed, 57.1 to 60.5 MHz over three seeds |
+| `1e543d1` | Requant shift over two stages, current layer's cycle count in a local register | 16112 | 2040 | 110 | 21910 (26%) | Routed, 58.5 to 67.2 MHz over three seeds |
 
 What each step taught:
 
@@ -113,6 +114,8 @@ fix is judged by the worst of the three, not by one run.
 | Round four, setup products pipelined (`f46e958`) | 59.8 MHz: pool read address into the `act_buffer` bank rows (12.3 ns routing) | 56.0 MHz: descriptor RAM port select in `npu_regs` | 54.9 MHz: the requant multiplier, again one merged register for eight units | 54.9 MHz |
 | Round four, all requant constants kept (`d64fd0c`) | 62.7 MHz: descriptor RAM port select | 50.2 MHz: bias prefetch address adder into the weight SRAM address pins (13.5 ns routing) | 64.3 MHz: requant shift and saturate, inside one unit | 50.2 MHz |
 | Round four (`99104df`) | 57.1 MHz: requant shift and saturate, inside one unit | 60.5 MHz: requant low-half multiply, inside one unit | 57.6 MHz: requant shift and saturate, inside one unit | 57.1 MHz |
+| Round five, shift over two stages (`dc3b7cc`) | 56.0 MHz: the per-layer cycle counter loop in `npu_sequencer` (labelled with AXI and register-file signals, see below) | 65.8 MHz: the same path | 60.9 MHz: the same path | 56.0 MHz |
+| Round five (`1e543d1`) | 67.2 MHz: requant low-half multiply, inside one unit | 58.5 MHz: host read address decode into the descriptor RAM | 58.8 MHz: requant high-half multiply, inside one unit | 58.5 MHz |
 
 The second row is the lesson: registering the pool output was right, but alone it did not move the worst case,
 because two other paths were nearly as long. Round two fixed those as well, at no cycle cost:
@@ -159,6 +162,26 @@ Reading the timing:
 - The ECP5 cell count rose from 24655 to 27310 with the last commit, while the xc7 count for the same change
   moved by 57 LUTs. That points at the ECP5 mapping rather than the RTL (Yosys 0.33's ABC9 aborts one call in
   every run, see above); the exact cause has not been isolated.
+- Round five split the requant shift and then removed a path the reports had mislabelled:
+  - Stage 3 becomes two stages. Stage 2b forms shift - 1 next to the product add; stage 3a shifts by the
+    multiple of 8 and keeps the 21 low bits, a flag that the bits above are all equal, and the sign; stage 3b
+    shifts by the remaining 0..7 and saturates. The saturated value is bit-identical to the one-step shift (an
+    off-line check over every shift amount and 491k products around every boundary). Requant latency 5 -> 6;
+    `conv_engine`'s flush window is now derived from the latencies (`2N + ABUF_RD_LAT + RQ_PIPE_LAT`, the
+    measured minimum), which keeps it at 24 cycles, so no cycle count changed. The narrow shifter also took
+    190 LUTs out of each requant unit on xc7.
+  - With the shift gone, all three seeds reported a path labelled with `m_axi_bvalid_i`, `m_axi_arvalid` and the
+    register file's read data, signals the RTL does not connect combinationally. The labels are names nextpnr
+    gives cells after neighbouring nets. The workflow now prints the raw path with placement coordinates, and
+    `nextpnr_summary.py` lists the source lines the path's cells were built from. Those showed the real path:
+    the per-layer cycle counter in `npu_sequencer`, where one incrementer served all sixteen counters by
+    gathering `layer_cycles_o[cur_q]` through a 16:1 select and writing the sum back, a loop through 512
+    flip-flops that crossed the die twice (x 56 -> 19 -> 65 -> 23, 12.5 ns of routing). The current layer's
+    count now lives in one local register that restarts when the layer advances; the counters hold the same
+    values in every cycle, and the sequencer lost 318 LUTs on xc7.
+  - The worst seed is 58.5 MHz (was 57.1), the best 67.2 MHz, and the ECP5 logic is down to 26% of the device.
+    Two seeds now fail in the requant multiply (`s1_sum_q` into the DSP halves, about 5 ns of routing before
+    the DSP), the third on the host read address decode into the descriptor RAM.
 - These are FPGA numbers from an open flow. The same RTL in a standard-cell process would close far higher;
   the value here is that every path has been through a real placer and router and the worst ones are known.
 

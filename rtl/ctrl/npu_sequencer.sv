@@ -416,31 +416,34 @@ module npu_sequencer
   // ---------------------------------------------------------------------------
   // Performance counters
   // ---------------------------------------------------------------------------
-  // One incrementer on the selected layer counter, written back with a decoded
-  // enable (same reason as the descriptor select above).
-  logic [31:0] layer_cycles_inc_c;
-  always_comb begin
-    layer_cycles_inc_c = '0;
-    for (int i = 0; i < NUM_DESC; i++) begin
-      layer_cycles_inc_c |= layer_cycles_o[i] & {32{cur_q == 4'(i)}};
-    end
-    layer_cycles_inc_c = layer_cycles_inc_c + 32'd1;
-  end
+  // The current layer's count lives in one local register, cur_cycles_q, equal
+  // to layer_cycles_o[cur_q] at all times: every counter is cleared at START
+  // and cur_q only moves forward, so the count restarts at 0 whenever cur_q
+  // advances. The incremented value is written to the current layer's counter
+  // with a decoded enable. (Gathering layer_cycles_o[cur_q] through a 16:1
+  // select every cycle made a loop through all 512 counter flip-flops, which
+  // the placer spreads towards the register file's read mux.)
+  logic [31:0] cur_cycles_q;
+  logic        cur_adv_c;      // cur_q advances at the end of this cycle
+  assign cur_adv_c = (state_q == S_NEXT) && (5'(cur_q) + 5'd1 != cnt_q);
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       layer_cycles_o      <= '0;
       total_cycles_o      <= '0;
       array_busy_cycles_o <= '0;
+      cur_cycles_q        <= '0;
     end else if (start_ok_c) begin
       layer_cycles_o      <= '0;
       total_cycles_o      <= '0;
       array_busy_cycles_o <= '0;
+      cur_cycles_q        <= '0;
     end else if (busy_q) begin
       total_cycles_o       <= total_cycles_o + 32'd1;
       for (int i = 0; i < NUM_DESC; i++) begin
-        if (cur_q == 4'(i)) layer_cycles_o[i] <= layer_cycles_inc_c;
+        if (cur_q == 4'(i)) layer_cycles_o[i] <= cur_cycles_q + 32'd1;
       end
+      cur_cycles_q <= cur_adv_c ? '0 : cur_cycles_q + 32'd1;
       if (array_valid_i) array_busy_cycles_o <= array_busy_cycles_o + 32'd1;
     end
   end

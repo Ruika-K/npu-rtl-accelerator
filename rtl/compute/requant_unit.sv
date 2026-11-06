@@ -2,15 +2,16 @@
 
 // Requantization unit: one int32 accumulator value -> one int8 activation.
 //
-// Implements docs/architecture.md section 3.3 as a fixed 5-stage pipeline:
+// Implements docs/architecture.md section 3.3 as a fixed 6-stage pipeline:
 //   S1  sum     = acc + bias                                   (33-bit signed)
 //   S2a lo      = sum * mult[15:0], hi = sum * mult[31:16]     (two halves)
 //   S2b prod    = hi * 2^16 + lo  ( = sum * mult)              (65-bit signed)
-//   S3  k       = sat(prod >>> (shift-1))                      (14-bit signed)
+//   S3a t       = prod >>> 8c, where shift-1 = 8c + f          (kept: 21 low bits, range flag)
+//   S3b k       = sat(t >>> f) = sat(prod >>> (shift-1))       (14-bit signed)
 //   S4  rounded = (k + 1) >>> 1, i.e. (prod + 2^(shift-1)) >>> shift (round half up)
 //       q       = clamp(rounded + z_out, act_min, act_max)     (int8)
 //
-// S3 / S4 avoid the 65-bit rounding add and keep the tail narrow:
+// S3a / S3b / S4 avoid the 65-bit rounding add and keep the tail narrow:
 //   - for shift >= 1, (prod + 2^(shift-1)) >>> shift == ((prod >>> (shift-1)) + 1) >>> 1
 //     (floor division: write prod >>> (shift-1) as k, then both sides are floor((k+1)/2));
 //   - prod >>> (shift-1) is saturated to SAT_W bits first. Any value outside that
@@ -126,7 +127,8 @@ module requant_unit
   end
 
   // ---------------------------------------------------------------------------
-  // Stage 2b: prod = hi * 2^16 + lo
+  // Stage 2b: prod = hi * 2^16 + lo; the shift amount becomes shift - 1 (0 when
+  // shift is 0) and a no-shift flag, next to the add rather than after it
   // ---------------------------------------------------------------------------
   logic signed [MUL_W-1:0] prod_c;
   assign prod_c = $signed({s2a_hi_q, 16'h0000})
@@ -134,51 +136,101 @@ module requant_unit
 
   logic                      s2_valid_q;
   logic signed [MUL_W-1:0]  s2_prod_q;
-  logic [RQ_SHIFT_W-1:0]     s2_shift_q;
+  logic [RQ_SHIFT_W-1:0]     s2_shm1_q;      // shift - 1, or 0 when shift is 0
+  logic                      s2_noshift_q;   // shift was 0: no rounding step
   logic signed [ACT_W-1:0]   s2_z_q, s2_min_q, s2_max_q;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      s2_valid_q <= 1'b0;
-      s2_prod_q  <= '0;
-      s2_shift_q <= '0;
-      s2_z_q     <= '0;
-      s2_min_q   <= '0;
-      s2_max_q   <= '0;
+      s2_valid_q   <= 1'b0;
+      s2_prod_q    <= '0;
+      s2_shm1_q    <= '0;
+      s2_noshift_q <= 1'b0;
+      s2_z_q       <= '0;
+      s2_min_q     <= '0;
+      s2_max_q     <= '0;
     end else begin
       s2_valid_q <= s2a_valid_q;
       if (s2a_valid_q) begin
-        s2_prod_q  <= prod_c;
-        s2_shift_q <= s2a_shift_q;
-        s2_z_q     <= s2a_z_q;
-        s2_min_q   <= s2a_min_q;
-        s2_max_q   <= s2a_max_q;
+        s2_prod_q    <= prod_c;
+        s2_shm1_q    <= (s2a_shift_q == '0) ? '0 : s2a_shift_q - RQ_SHIFT_W'(1);
+        s2_noshift_q <= (s2a_shift_q == '0);
+        s2_z_q       <= s2a_z_q;
+        s2_min_q     <= s2a_min_q;
+        s2_max_q     <= s2a_max_q;
       end
     end
   end
 
   // ---------------------------------------------------------------------------
-  // Stage 3: shift by shift-1 and saturate
+  // Stages 3a / 3b: prod >>> (shift - 1), saturated to SAT_W bits, in two steps.
+  // Write shift - 1 = 8c + f with f in 0..7. Stage 3a shifts by 8c (t = prod >>> 8c)
+  // and keeps only what stage 3b needs: the low LO_W = SAT_W + 7 bits of t, a flag
+  // that t[MUL_W-1:LO_W-1] are all equal, and the sign. Stage 3b shifts the low
+  // part by f. This is exact: t >>> f fits SAT_W bits iff t[MUL_W-1:SAT_W-1+f] are
+  // all equal, i.e. iff the flag is set and t[LO_W-1:SAT_W-1+f] equal t[LO_W-1]
+  // (SAT_W-1+f <= LO_W-1); in that case the value is lo >>> f with lo the low
+  // LO_W bits of t as a signed number, and out of range the result saturates by
+  // the sign of prod.
   // ---------------------------------------------------------------------------
-  logic [RQ_SHIFT_W-1:0]    sh_m1_c;      // shift - 1, or 0 when shift is 0
-  logic signed [MUL_W-1:0]  shr_c;        // prod >>> (shift - 1)
-  logic                     in_range_c;   // shr_c fits in SAT_W bits
+  localparam int unsigned FINE_W = 3;
+  localparam int unsigned LO_W   = SAT_W + (1 << FINE_W) - 1;   // 21
+
+  logic signed [MUL_W-1:0]  coarse_c;    // prod >>> 8c
+  assign coarse_c = s2_prod_q >>> {s2_shm1_q[RQ_SHIFT_W-1:FINE_W], {FINE_W{1'b0}}};
+
+  logic                      s3a_valid_q;
+  logic signed [LO_W-1:0]    s3a_lo_q;
+  logic                      s3a_hieq_q;     // coarse_c[MUL_W-1:LO_W-1] all equal
+  logic                      s3a_sign_q;     // sign of prod
+  logic [FINE_W-1:0]         s3a_fine_q;     // f
+  logic                      s3a_noshift_q;
+  logic signed [ACT_W-1:0]   s3a_z_q, s3a_min_q, s3a_max_q;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      s3a_valid_q   <= 1'b0;
+      s3a_lo_q      <= '0;
+      s3a_hieq_q    <= 1'b0;
+      s3a_sign_q    <= 1'b0;
+      s3a_fine_q    <= '0;
+      s3a_noshift_q <= 1'b0;
+      s3a_z_q       <= '0;
+      s3a_min_q     <= '0;
+      s3a_max_q     <= '0;
+    end else begin
+      s3a_valid_q <= s2_valid_q;
+      if (s2_valid_q) begin
+        s3a_lo_q      <= coarse_c[LO_W-1:0];
+        s3a_hieq_q    <= (coarse_c[MUL_W-1:LO_W-1] == '0) || (coarse_c[MUL_W-1:LO_W-1] == '1);
+        s3a_sign_q    <= s2_prod_q[MUL_W-1];
+        s3a_fine_q    <= s2_shm1_q[FINE_W-1:0];
+        s3a_noshift_q <= s2_noshift_q;
+        s3a_z_q       <= s2_z_q;
+        s3a_min_q     <= s2_min_q;
+        s3a_max_q     <= s2_max_q;
+      end
+    end
+  end
+
+  logic signed [LO_W-1:0]   shr_c;        // lo >>> f
+  logic                     in_range_c;   // prod >>> (shift - 1) fits in SAT_W bits
   logic signed [SAT_W-1:0]  sat_c;
 
   always_comb begin
-    sh_m1_c    = (s2_shift_q == '0) ? '0 : s2_shift_q - RQ_SHIFT_W'(1);
-    shr_c      = s2_prod_q >>> sh_m1_c;
-    in_range_c = (shr_c[MUL_W-1:SAT_W-1] == '0) || (shr_c[MUL_W-1:SAT_W-1] == '1);
+    shr_c      = s3a_lo_q >>> s3a_fine_q;
+    in_range_c = s3a_hieq_q
+              && ((shr_c[LO_W-1:SAT_W-1] == '0) || (shr_c[LO_W-1:SAT_W-1] == '1));
     if (in_range_c) begin
       sat_c = shr_c[SAT_W-1:0];
     end else begin
-      sat_c = shr_c[MUL_W-1] ? {1'b1, {(SAT_W-1){1'b0}}} : {1'b0, {(SAT_W-1){1'b1}}};
+      sat_c = s3a_sign_q ? {1'b1, {(SAT_W-1){1'b0}}} : {1'b0, {(SAT_W-1){1'b1}}};
     end
   end
 
   logic                     s3_valid_q;
   logic signed [SAT_W-1:0]  s3_sat_q;
-  logic                     s3_noshift_q;   // shift was 0: no rounding step
+  logic                     s3_noshift_q;
   logic signed [ACT_W-1:0]  s3_z_q, s3_min_q, s3_max_q;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -190,13 +242,13 @@ module requant_unit
       s3_min_q     <= '0;
       s3_max_q     <= '0;
     end else begin
-      s3_valid_q <= s2_valid_q;
-      if (s2_valid_q) begin
+      s3_valid_q <= s3a_valid_q;
+      if (s3a_valid_q) begin
         s3_sat_q     <= sat_c;
-        s3_noshift_q <= (s2_shift_q == '0);
-        s3_z_q       <= s2_z_q;
-        s3_min_q     <= s2_min_q;
-        s3_max_q     <= s2_max_q;
+        s3_noshift_q <= s3a_noshift_q;
+        s3_z_q       <= s3a_z_q;
+        s3_min_q     <= s3a_min_q;
+        s3_max_q     <= s3a_max_q;
       end
     end
   end

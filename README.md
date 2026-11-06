@@ -121,15 +121,15 @@ Measured by `.github/workflows/synth.yml` on every push; details and the history
 
 | Target | Logic | Flip-flops | Block RAM | Multipliers | Fmax |
 | --- | --- | --- | --- | --- | --- |
-| Xilinx 7-series, Yosys `synth_xilinx` | 18.0K LUT + 3.3K MUXF | 14.5K | 40 RAMB36 + 1 RAMB18 | 110 DSP48E1 | - |
-| Lattice ECP5-85k, Yosys + nextpnr, placed and routed | 27.3K LUT4 (32%) | 15.0K | 81 DP16KD | 113 MULT18X18D | 57.1 to 60.5 MHz (3 seeds) |
+| Xilinx 7-series, Yosys `synth_xilinx` | 16.1K LUT + 2.0K MUXF | 15.0K | 40 RAMB36 + 1 RAMB18 | 110 DSP48E1 | - |
+| Lattice ECP5-85k, Yosys + nextpnr, placed and routed | 21.9K LUT4 (26%) | 15.4K | 81 DP16KD | 113 MULT18X18D | 58.5 to 67.2 MHz (3 seeds) |
 
 The first per-module report put the core at 51K LUTs, two thirds of it in the sequencer and the register file:
 variable-index selects of wide arrays, which sv2v and Yosys turn into barrel shifters. Rewriting those selects,
 fetching the current descriptor word by word instead of selecting it whole, pipelining the two longest paths
 and moving the descriptor table into a RAM, then removing the paths each routed build exposed, brought the core
 to the numbers above for 15 extra cycles per layer. Fmax is quoted over three placement seeds because one seed can
-hide a path that another exposes. At the worst of the three, one MNIST image takes about 0.33 ms.
+hide a path that another exposes. At the worst of the three, one MNIST image takes about 0.32 ms.
 
 ## Documentation
 

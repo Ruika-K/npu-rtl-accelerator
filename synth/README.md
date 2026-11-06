@@ -12,15 +12,18 @@ make synth-ecp5     # sv2v + yosys synth_ecp5 + nextpnr-ecp5 --85k: build/synth/
 
 - `stat_table.py` turns the non-flattened xc7 report into a per-module table (cells include submodules).
 - `nextpnr_summary.py` prints the ECP5 utilisation, the post-route Fmax and the critical path, one line
-  per RTL signal on the path.
+  per RTL signal on the path. The signal names come from the cell names, which inside a mapped cone can be an
+  arbitrary neighbour, so given the synthesized Verilog it also lists the source lines (with their module)
+  that the path's cells were built from; the workflow additionally prints the raw path with the placement
+  coordinates of every hop.
 - `npu_top_ooc.sv` is the out-of-context wrapper used for ECP5 place and route. `npu_top` has 273 input and
   211 output bits, more than any ECP5 package bonds; the wrapper feeds every input from a shift register on
   one pin and XOR-reduces every registered output onto another, so no logic is removed, the clock stays on a
   global network and every path is register to register. It adds 485 flip-flops and a small XOR tree. The
   xc7 resource report runs on `npu_top` itself.
 - `ecp5.ys` marks the requant units' layer-constant registers `keep` after `proc`, so that Yosys does not merge
-  the eight identical copies into one high-fanout register (ADR-018). It asserts that it found exactly 17
-  registers, so a renamed register fails the run instead of silently dropping the constraint.
+  the eight identical copies into one high-fanout register (ADR-018). It asserts that it found exactly 23
+  registers, so a renamed or added register fails the run instead of silently dropping the constraint.
 
 Tools: sv2v (https://github.com/zachjs/sv2v), Yosys 0.33 or newer, nextpnr-ecp5.
 The CI workflow `.github/workflows/synth.yml` runs both and publishes the

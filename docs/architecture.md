@@ -246,8 +246,10 @@ for n_tile in 0 .. ceil(C_out / 8) - 1:
   write-back knows the channel, the row and the lane mask of what it is draining.
 - Write-back overlaps the next tile's compute, because the drain takes only 8 cycles and `P >= 8`.
 - Drained results for padding columns `n >= C_out` are discarded.
-- Done is pulsed a fixed `2N + 8` cycles after the last beat, which covers skew, drain, the requant pipeline and
-  the last write.
+- Done is pulsed a fixed number of cycles after the last beat, one cycle after the last write request:
+  `FLUSH_CYCLES = 2N + ABUF_RD_LAT + RQ_PIPE_LAT` (24 with the defaults) plus the FLUSH entry and the done
+  register. The terms are the read pipeline into the array, the skew to row N-1 and the column drain, and the
+  requant pipeline; the bound is exact (one cycle less fails `conv_engine_tb`).
 
 ### 5.5 Throughput estimate (LeNet-5 MNIST, cycles)
 
@@ -388,12 +390,14 @@ restarts the drain and corrupts the previous tile; that is a producer bug, not a
 ### 7.8 requant_unit
 
 Inputs `acc_i[31:0]`, `bias_i[31:0]`, `mult_i[31:0]`, `shift_i[5:0]`, `z_out_i[7:0]`, `act_min_i[7:0]`,
-`act_max_i[7:0]`, `valid_i`; outputs `q_o[7:0]`, `valid_o`. Fixed 5-stage pipeline (`RQ_PIPE_LAT`) split along
+`act_max_i[7:0]`, `valid_i`; outputs `q_o[7:0]`, `valid_o`. Fixed 6-stage pipeline (`RQ_PIPE_LAT`) split along
 the formula in section 3.3: S1 does the 33-bit bias add, S2a the two 33 x 16-bit halves of the multiply, S2b
-their sum, S3 the shift by shift-1 with saturation to 14 bits, S4 the final rounding step, zero-point add and
-clamp (exactly equal to the formula; the argument is in the module header). `valid_o` is exactly `valid_i`
-delayed by 5 cycles; data registers only toggle when valid. The extra stages came from routed ECP5 builds that
-showed the one-cycle multiply and the one-cycle tail as critical paths.
+their sum (and shift-1 next to it), S3a and S3b the shift by shift-1 with saturation to 14 bits (S3a shifts by
+the multiple of 8 and keeps 21 low bits plus a range flag, S3b shifts by the remaining 0..7), S4 the final
+rounding step, zero-point add and clamp (exactly equal to the formula; the arguments are in the module header).
+`valid_o` is exactly `valid_i` delayed by 6 cycles; data registers only toggle when valid. The extra stages came
+from routed ECP5 builds that showed the one-cycle multiply, the one-cycle tail and then the one-cycle 65-bit
+shift as critical paths.
 
 ### 7.9 pe
 

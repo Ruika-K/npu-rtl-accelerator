@@ -50,7 +50,12 @@ module conv_engine
   localparam int unsigned LANE_W  = $clog2(N);
   localparam int unsigned IDX_W   = $clog2(N);
   localparam int unsigned BIAS_WORDS = N / 2;          // 64-bit words holding N int32 biases
-  localparam int unsigned FLUSH_CYCLES = 2 * N + 8;    // skew + drain + requant + write + slack
+  // Done follows the last write request by one cycle (act_buffer registers it).
+  // From the last beat: generator register, ABUF_RD_LAT and the array input
+  // register (2 + ABUF_RD_LAT), skew to row N-1 and the column drain (2N - 1),
+  // the requant pipeline (RQ_PIPE_LAT); the FLUSH entry and the done register
+  // add two. Exact: one cycle less fails conv_engine_tb.
+  localparam int unsigned FLUSH_CYCLES = 2 * N + ABUF_RD_LAT + RQ_PIPE_LAT;
 
   // ---------------------------------------------------------------------------
   // Layer parameters, registered at start

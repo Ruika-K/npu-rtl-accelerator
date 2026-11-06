@@ -62,13 +62,23 @@ jobs:
       - name: Synthesize, place and route
         run: make synth-ecp5 PNR_SEED=${{ matrix.seed }}
 
+      - name: Raw critical path
+        # The summary labels each segment with a signal name, which can be an
+        # arbitrary neighbour inside a mapped cone; the raw report has the cells
+        # and the placement coordinates of every hop (source references dropped,
+        # the summary lists them). Printed before the summary so that the
+        # summary ends the job log.
+        if: always()
+        run: |
+          awk '/Critical path report for clock/{n=1; buf=""} n && (/ Source | Net | Setup |ns logic/){buf=buf $0 "\n"} n && /ns logic, .* ns routing/{last=buf; n=0} END{printf "%s", last}' build/synth/nextpnr.log
+
       - name: Report
         if: always()
         run: |
           {
             echo '## ECP5 LFE5U-85F, nextpnr-ecp5 --freq 100, seed ${{ matrix.seed }}'
             echo '```'
-            python3 synth/nextpnr_summary.py build/synth/nextpnr.log
+            python3 synth/nextpnr_summary.py build/synth/nextpnr.log build/synth/npu_top_ooc.v
             echo '```'
             echo 'Yosys ABC warnings (with the pass they come from):'
             echo '```'

@@ -62,6 +62,16 @@ jobs:
       - name: Synthesize, place and route
         run: make synth-ecp5 PNR_SEED=${{ matrix.seed }}
 
+      - name: Raw critical path
+        # The summary labels each segment with a signal name, which can be an
+        # arbitrary neighbour inside a mapped cone; the raw report has the cells
+        # and the placement coordinates of every hop (source references dropped,
+        # the summary lists them). Printed before the summary so that the
+        # summary ends the job log.
+        if: always()
+        run: |
+          awk '/Critical path report for clock/{n=1; buf=""} n && (/ Source | Net | Setup |ns logic/){buf=buf $0 "\n"} n && /ns logic, .* ns routing/{last=buf; n=0} END{printf "%s", last}' build/synth/nextpnr.log
+
       - name: Report
         if: always()
         run: |
@@ -75,14 +85,6 @@ jobs:
             awk '/^[0-9.]+ Executing/{h=$0} /ABC: execution of command/{print h; print}' build/synth/ecp5.log | head -20
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - name: Raw critical path
-        # The summary labels each segment with a signal name, which can be an
-        # arbitrary neighbour inside a mapped cone; the raw report has the cells
-        # and the placement coordinates of every hop.
-        if: always()
-        run: |
-          awk '/Critical path report for clock/{n=1; buf=""} n{buf=buf $0 "\n"} n && /ns logic, .* ns routing/{last=buf; n=0} END{printf "%s", last}' build/synth/nextpnr.log
 
       - name: Upload reports
         if: always()

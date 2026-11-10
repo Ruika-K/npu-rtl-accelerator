@@ -94,11 +94,81 @@ module npu_regs
   // ---------------------------------------------------------------------------
   typedef enum logic [1:0] {TGT_REG, TGT_ABUF, TGT_WBUF, TGT_NONE} tgt_e;
 
+  // Windows are decoded with equality tests only. A window [base, base + bytes)
+  // is a run of aligned granules, the granule being the lowest set bit of
+  // base | bytes, and each granule is one compare of the address bits above it.
+  // This is exact for any base and size; a magnitude compare against the bounds
+  // built a carry chain, which sat on the host read path into the descriptor
+  // RAM on ECP5. With the default map every window is one or a few granules.
+  localparam int unsigned REGS_BYTES   = 32'h1000;
+  localparam int unsigned DESC_BYTES   = NUM_DESC * DESC_WORDS * 4;
+  localparam int unsigned LOGITS_BYTES = NUM_LOGITS * 4;
+  localparam int unsigned PERF_BYTES   = NUM_DESC * 4;
+
+  localparam int unsigned ABUF_X    = 32'(ABUF_BASE) | ABUF_BYTES;
+  localparam int unsigned ABUF_GW   = $clog2(ABUF_X & ~(ABUF_X - 1));
+  localparam int unsigned ABUF_NG   = ABUF_BYTES >> ABUF_GW;
+  localparam int unsigned WBUF_X    = 32'(WBUF_BASE) | WBUF_BYTES;
+  localparam int unsigned WBUF_GW   = $clog2(WBUF_X & ~(WBUF_X - 1));
+  localparam int unsigned WBUF_NG   = WBUF_BYTES >> WBUF_GW;
+  localparam int unsigned DESC_X    = 32'(REG_DESC_BASE) | DESC_BYTES;
+  localparam int unsigned DESC_GW   = $clog2(DESC_X & ~(DESC_X - 1));
+  localparam int unsigned DESC_NG   = DESC_BYTES >> DESC_GW;
+  localparam int unsigned LOGITS_X  = 32'(REG_LOGITS_BASE) | LOGITS_BYTES;
+  localparam int unsigned LOGITS_GW = $clog2(LOGITS_X & ~(LOGITS_X - 1));
+  localparam int unsigned LOGITS_NG = LOGITS_BYTES >> LOGITS_GW;
+  localparam int unsigned PERF_X    = 32'(REG_PERF_LAYER_BASE) | PERF_BYTES;
+  localparam int unsigned PERF_GW   = $clog2(PERF_X & ~(PERF_X - 1));
+  localparam int unsigned PERF_NG   = PERF_BYTES >> PERF_GW;
+
+  function automatic logic in_abuf(input logic [19:0] a);
+    logic hit;
+    hit = 1'b0;
+    for (int k = 0; k < ABUF_NG; k++) hit |= ((a >> ABUF_GW) == 20'((ABUF_BASE >> ABUF_GW) + 20'(k)));
+    return hit;
+  endfunction
+
+  function automatic logic in_wbuf(input logic [19:0] a);
+    logic hit;
+    hit = 1'b0;
+    for (int k = 0; k < WBUF_NG; k++) hit |= ((a >> WBUF_GW) == 20'((WBUF_BASE >> WBUF_GW) + 20'(k)));
+    return hit;
+  endfunction
+
+  function automatic logic in_desc(input logic [11:0] a);
+    logic hit;
+    hit = 1'b0;
+    for (int k = 0; k < DESC_NG; k++) hit |= ((a >> DESC_GW) == 12'((REG_DESC_BASE >> DESC_GW) + 12'(k)));
+    return hit;
+  endfunction
+
+  function automatic logic in_logits(input logic [11:0] a);
+    logic hit;
+    hit = 1'b0;
+    for (int k = 0; k < LOGITS_NG; k++) hit |= ((a >> LOGITS_GW) == 12'((REG_LOGITS_BASE >> LOGITS_GW) + 12'(k)));
+    return hit;
+  endfunction
+
+  function automatic logic in_perf_layer(input logic [11:0] a);
+    logic hit;
+    hit = 1'b0;
+    for (int k = 0; k < PERF_NG; k++) hit |= ((a >> PERF_GW) == 12'((REG_PERF_LAYER_BASE >> PERF_GW) + 12'(k)));
+    return hit;
+  endfunction
+
+  // Word offset inside the descriptor block, {idx, word}: the bits below the
+  // window granule pass through and only the granule number is offset.
+  function automatic logic [7:0] desc_woff(input logic [11:0] a);
+    logic [11:0] d;
+    d = 12'(((a >> DESC_GW) - 12'(REG_DESC_BASE >> DESC_GW)) << DESC_GW) | (a & 12'((1 << DESC_GW) - 1));
+    return 8'(d >> 2);
+  endfunction
+
   function automatic tgt_e decode(input logic [19:0] a);
     if (a[1:0] != 2'b00) return TGT_NONE;
-    if (a < 20'h01000) return TGT_REG;
-    if (a >= ABUF_BASE && a < ABUF_END) return TGT_ABUF;
-    if (a >= WBUF_BASE && a < WBUF_END) return TGT_WBUF;
+    if ((a >> $clog2(REGS_BYTES)) == '0) return TGT_REG;
+    if (in_abuf(a)) return TGT_ABUF;
+    if (in_wbuf(a)) return TGT_WBUF;
     return TGT_NONE;
   endfunction
 
@@ -126,10 +196,8 @@ module npu_regs
   // Host read of a descriptor word (address decode for the descriptor RAM)
   logic       host_desc_rd_c;
   logic [7:0] host_desc_woff_c;
-  assign host_desc_rd_c   = rd_req_i && (decode(rd_addr_i) == TGT_REG) &&
-                            (rd_addr_i[11:0] >= REG_DESC_BASE) &&
-                            (rd_addr_i[11:0] < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4));
-  assign host_desc_woff_c = 8'((rd_addr_i[11:0] - REG_DESC_BASE) >> 2);   // {idx, word}
+  assign host_desc_rd_c   = rd_req_i && (decode(rd_addr_i) == TGT_REG) && in_desc(rd_addr_i[11:0]);
+  assign host_desc_woff_c = desc_woff(rd_addr_i[11:0]);   // {idx, word}
 
   // ---------------------------------------------------------------------------
   // Register read mux
@@ -147,14 +215,14 @@ module npu_regs
 
   function automatic logic [31:0] reg_read(input logic [11:0] a);
     logic [3:0]  idx;
-    if (a >= REG_DESC_BASE && a < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4)) begin
+    if (in_desc(a)) begin
       return 32'h0;        // the word itself comes from the descriptor RAM
     end
-    if (a >= REG_LOGITS_BASE && a < REG_LOGITS_BASE + 12'(NUM_LOGITS * 4)) begin
+    if (in_logits(a)) begin
       idx = 4'((a - REG_LOGITS_BASE) >> 2);
       return {{24{logits_q[idx][7]}}, logits_q[idx]};
     end
-    if (a >= REG_PERF_LAYER_BASE && a < REG_PERF_LAYER_BASE + 12'(NUM_DESC * 4)) begin
+    if (in_perf_layer(a)) begin
       idx = 4'((a - REG_PERF_LAYER_BASE) >> 2);
       return layer_cycles_read(idx);
     end
@@ -197,7 +265,7 @@ module npu_regs
   logic [3:0]  desc_idx_c, desc_word_c;
 
   assign wr_off_c    = wr_addr_i[11:0];
-  assign desc_woff_c = 8'((wr_off_c - REG_DESC_BASE) >> 2);
+  assign desc_woff_c = desc_woff(wr_off_c);
   assign desc_idx_c  = desc_woff_c[7:4];
   assign desc_word_c = desc_woff_c[3:0];
   // Write data of a descriptor word with its reserved bits cleared. Stored words
@@ -224,8 +292,7 @@ module npu_regs
   localparam int unsigned DESC_AW        = $clog2(DESC_RAM_DEPTH);
 
   logic desc_wr_c, desc_store_c;
-  assign desc_wr_c    = wr_req_i && (wr_tgt_c == TGT_REG) &&
-                        (wr_off_c >= REG_DESC_BASE) && (wr_off_c < REG_DESC_BASE + 12'(NUM_DESC * DESC_WORDS * 4));
+  assign desc_wr_c    = wr_req_i && (wr_tgt_c == TGT_REG) && in_desc(wr_off_c);
   assign desc_store_c = desc_wr_c && (desc_word_c < 4'(DESC_USED_WORDS));
 
   logic [DESC_RAM_DEPTH-1:0] desc_valid_q;

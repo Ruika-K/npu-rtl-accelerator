@@ -27,7 +27,9 @@ make synth-ecp5     # sv2v + yosys synth_ecp5 + nextpnr-ecp5 --85k: build/synth/
 
 Tools: sv2v (https://github.com/zachjs/sv2v), Yosys 0.33 or newer, nextpnr-ecp5.
 The CI workflow `.github/workflows/synth.yml` runs both and publishes the
-numbers in the job summary; `docs/synthesis.md` records them.
+numbers in the job summary; `docs/synthesis.md` records them. It routes three
+placement seeds and stops one after 45 minutes (normal runs take 7 to 12):
+router2 has twice failed to converge on a placement of this design.
 
 The SRAMs are the behavioural `sram_1r1w` and are inferred as block RAM; a
 real tape-out would replace that module with memory macros.

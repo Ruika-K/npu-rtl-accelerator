@@ -239,3 +239,25 @@ This is the most important architectural decision in v1.
   on the placer.
 - Cost: 896 flip-flops on ECP5 (14054 to 14950, 17% of the device, between `f46e958` and `d64fd0c`); the xc7
   resource report, which is not placed, does not apply the rule.
+
+## ADR-019 Assertions in bound checkers, cover-property closure as a CI gate
+
+- Context: the verification plan listed SVA from the start, but the checks had all been written as procedural
+  testbench code, and nothing measured which scenarios the tests reach. The CI simulator (Verilator 5.020)
+  supports neither covergroups nor SVA sequences with `##` delays.
+- Choice: one checker module per RTL module in `tb/sva`, attached with `bind` and compiled into every testbench
+  (`--assert`). Environment constraints are `assume`, guarantees `assert`, scenarios `cover`. Multi-cycle
+  properties use a few reference registers in the checker and single-cycle implications. Each run writes its
+  cover counts, `make cover` merges them, and CI fails on a cover property that no test reaches unless it is
+  waived with a reason.
+- Why: bound checkers keep the RTL free of verification code and run in every testbench that contains the
+  module, including the full-network runs, so an interface rule is checked under all the traffic that exists.
+  Reference registers work in any simulator and do not depend on the DUT's state encoding. Cover properties
+  give functional coverage in the one construct the open simulator supports, and the closure check turns "we
+  think that is tested" into a measured fact: the first report found eight unreached scenarios, among them
+  DMA bursts cut by a 4 KB boundary, which the DMA implements and no test had exercised.
+- Rejected: assertions inside the RTL files (mixes synthesis and verification code, and `ifdef`s); covergroups
+  (not available in the CI simulator; they belong to the class-based environment for the commercial simulator);
+  code coverage as the metric (says what was executed, not which scenario was checked).
+- Cost: simulation time for the checkers; one shared `main()` for all Verilator testbenches so that the coverage
+  database is written; the properties avoid `##` and property operators, which makes a few of them longer.

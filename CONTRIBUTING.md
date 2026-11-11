@@ -35,6 +35,10 @@ This file is the working agreement for every change in this repository.
   identical values under Verilator and VCS.
 - Every testbench prints exactly one `PASS:` or `FAIL:` line and exits with `$finish` or `$fatal`.
 - Reference functions shared between testbenches live in `tb/common/npu_tb_pkg.sv` and mirror `model/npu_ref.py`.
+- Assertions live in `tb/sva/<module>_sva.sv`, one checker per RTL module, attached with `bind`; the RTL files
+  contain no assertions. Use `m_` for environment assumptions, `a_` for guarantees and `c_` for cover properties,
+  and stay inside the SVA subset of the CI simulator (`docs/verification.md` section 2.3). A new cover property
+  must be reached by a test, or waived with a reason in `tb/sva/cover_waivers.txt`.
 - Each unit testbench has a filelist `sim/filelists/unit_<module>.f` and is run with `make unit-<module>`.
 
 ## Golden model

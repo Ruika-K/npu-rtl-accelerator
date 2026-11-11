@@ -271,6 +271,17 @@ module axil_slave_tb
       else                        do_read(rand_addr());
     end
 
+    // Phase 4: a slow master. The response is ready three cycles after the
+    // request at the earliest, so only a longer delay makes B and R wait for
+    // BREADY / RREADY (the cover properties of axil_slave_sva showed that the
+    // delays of phase 3 never did).
+    for (int i = 0; i < 40; i++) begin
+      u_bfm.max_resp_delay = $urandom_range(12, 6);
+      if (i % 2 == 0) do_write(rand_addr(), $urandom(), 4'($urandom_range(15, 1)));
+      else            do_read(rand_addr());
+    end
+    u_bfm.max_resp_delay = 0;
+
     repeat (4) @(negedge clk_i);
     if (outstanding != 0) begin n_errors++; $display("ERROR: %0d internal-bus requests left without ack", outstanding); end
 

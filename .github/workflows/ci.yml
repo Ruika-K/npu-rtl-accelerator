@@ -29,6 +29,14 @@ jobs:
       - name: Top-level integration test
         run: make integ
 
+      - name: Cover-property closure
+        run: |
+          make cover
+          {
+            echo '## Cover properties (tb/sva), merged over all runs'
+            python3 tb/sva/cover_report.py build/cov/*.dat --waivers tb/sva/cover_waivers.txt --markdown
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload simulation logs
         if: always()
         uses: actions/upload-artifact@v4

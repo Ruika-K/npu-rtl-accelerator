@@ -4,13 +4,13 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 ## Current milestone
 
-All milestones M1 to M6 are merged, both networks (MNIST and CIFAR-10) run bit-exact in `make ci`, and the
-work has been timing closure on the open ECP5 flow, judged by the worst of three placement seeds. The descriptor
-table in a RAM (ADR-017) took ECP5 from 34.8 to 56.2 MHz; rounds two to five raised the worst seed from 40.4 to
-58.5 MHz. Round six (branch `perf/dsp-split-decode`) decodes the register file's address windows with equality
-tests (worst seed 58.8 MHz, 58.8 to 60.6 MHz over three seeds, ECP5 logic 25%), tried and reverted a requant
-multiply split into DSP-sized products, and bounds a stalled place and route at 45 minutes. Every remaining
-path is mostly routing and they move between blocks from seed to seed, so the RTL pipelining work stops here.
+M1 to M6 are merged, both networks (MNIST and CIFAR-10) run bit-exact in `make ci`, and six rounds of timing
+closure on the open ECP5 flow raised the worst of three placement seeds from 40.4 to 58.8 MHz
+(`docs/synthesis.md`). The current work is M7, verification hardening. Its first step (branch
+`feat/verif-sva-cocotb`) binds SVA checkers to the RTL in every testbench and makes cover-property closure a CI
+gate (ADR-019): 76 cover properties, all reached after seven tests were added for the scenarios the first report
+showed as never exercised. Next in M7: a cocotb / pyuvm environment with functional coverage, then a
+SystemVerilog UVM environment for the commercial simulator. M8 is the RTL-to-GDS flow.
 
 ## Completed
 
@@ -104,6 +104,16 @@ path is mostly routing and they move between blocks from seed to seed, so the RT
     for any base and size); a requant multiply split into four DSP-sized products, measured and reverted; place
     and route stopped after 45 minutes. ECP5 worst seed 58.5 -> 58.8 MHz.
 
+- M7, step 1 (2026-11-11):
+  - `tb/sva/`: eleven checker modules bound to `axil_slave`, `npu_dma`, `async_fifo`, `pix_writer`,
+    `requant_unit`, `act_buffer`, `weight_buffer`, `systolic_array`, `conv_engine`, `npu_sequencer` and `npu_top`
+    (92 assertions and assumptions, 76 cover properties), enabled in all 16 testbenches; `make lint-sva`.
+  - Cover closure: `tb/common/verilator_main.cpp` (one `main()` for all Verilator testbenches, writes the cover
+    database), `tb/sva/cover_report.py`, `make cover` in `make ci`, the table in the CI job summary; `tb/sva/mutation_run.py`.
+  - Tests added for unreached scenarios: B / R back-pressure (`axil_slave_tb` phase 4), DMA bursts cut by a
+    4 KB boundary and single-beat bursts in both directions (`npu_top_tb`), a NUM_DESC-layer program
+    (`npu_sequencer_tb`).
+
 ## Milestone plan
 
 | Milestone | Scope | Status |
@@ -114,6 +124,8 @@ path is mostly routing and they move between blocks from seed to seed, so the RT
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | Done |
 | M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | Done |
+| M7 | Verification hardening: SVA checkers and cover closure, cocotb / pyuvm environment with functional coverage, SystemVerilog UVM environment | Step 1 of 3 done |
+| M8 | RTL to GDS on SKY130 with the open flow (ASIC memory configuration, SRAM macros, DRC / LVS, frequency / area / power) | Planned |
 
 ## Verification evidence
 
@@ -171,6 +183,10 @@ path is mostly routing and they move between blocks from seed to seed, so the RT
 | 2026-11-06 | Verilator 5.020 | Address windows by equality: exhaustive comparison with the old decode, `make ci`, mutations | 1064960 comparisons agree (all 2^20 addresses, all 4096 register offsets), also with 24 KB and 96 KB buffers; all testbenches pass; a descriptor window one granule short, a logits window without its first granule, a halved register space, or a descriptor offset without its low bits fails `npu_regs_tb` |
 | 2026-11-06 | Verilator 5.020 | Four DSP-sized partial products (reverted): `make ci`, mutations | PASS, cycle counts unchanged; the low sum part read as signed, the low-low term sign-extended, or the weights 2^16 and 2^17 swapped fail `requant_unit_tb` |
 | 2026-11-06 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweeps of `b9210b7` and `a1352bc` | `b9210b7`: 59.4 / 58.8 / 60.6 MHz, xc7 16050 LUT, 1936 MUXF; ECP5 21653 LUT4 cells (25%). `a1352bc`: seed 1 did not finish routing in two hours, seeds 2 and 3 at 59.0 and 58.2 MHz; reverted |
+| 2026-11-11 | Verilator 5.020 | SVA checkers in all testbenches: `make clean && make ci` | All 16 testbenches and both networks pass with the assertions enabled; `make lint-sva` clean; 120 s against 113 s without assertions |
+| 2026-11-11 | Verilator 5.020 | `make cover`, first report | 69 of 77 cover properties reached; unreached: B and R waiting for the master, DMA single-beat and 4 KB-split bursts (read and write), a 16-layer program, a blocked pixel write |
+| 2026-11-11 | Verilator 5.020 | `make cover` after the added tests | 76 of 76 reached, no waivers; the new DMA transfers across 4 KB boundaries move the data correctly |
+| 2026-11-11 | Verilator 5.020 | Mutation run for the assertions: 19 RTL defects, one at a time, each run with and without `--assert` | An assertion fails in all 19 (AXI hold rules, joint AW/W accept, response data, 4 KB crossing, WLAST, AWLEN, Gray code, FIFO read hold, latencies, output range, drain start, shared weight port, memory access while idle, counter sum, busy without done, pixel grant, write without grant, beat outside a tile). Without assertions the testbenches catch 16; three are seen only by assertions (an extra beat in a padded tile, the pixel grant during a DMA, a pixel write without the grant), all interface-contract violations that the current environment masks |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `main` (`5cc8e3d`) | 56.2 / 45.9 / 40.4 MHz, three different critical paths |
 | 2026-11-04 | Verilator 5.020 | Registered pool write port, channel mask in the tile queue, two-stage requant multiply: unit testbenches, `make clean && make ci` | PASS; mutations (early capture, off-by-one mask, signed low half) fail; cycle counts unchanged |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `cb95def` | 60.5 / 50.8 / 52.6 MHz, worst 50.8 (was 40.4); xc7 17886 LUT, 14012 FF; ECP5 24247 LUT4 cells (28%) |
@@ -185,10 +201,14 @@ path is mostly routing and they move between blocks from seed to seed, so the RT
 
 ## Next steps
 
-1. Run the unit and integration testbenches with VCS and record the results in the table below.
-2. Timing, if more is wanted: the remaining paths are 11 to 14 ns of routing in different blocks per seed
-   (`docs/synthesis.md`). The next levers are physical: duplicate the buffer enables and addresses per group of
-   block RAMs, or constrain placement; RTL pipelining has stopped paying for itself.
+1. M7 step 2: a cocotb / pyuvm environment for `npu_top` (AXI4-Lite agent, sequences, a scoreboard that calls
+   `model/npu_ref.py` directly, functional coverage with cocotb-coverage), run in CI.
+2. M7 step 3: a SystemVerilog UVM environment for the commercial simulator, elaboration-checked in CI with an
+   open parser, simulated with VCS on the author's machine.
+3. Run the unit and integration testbenches with VCS and record the results in the table below (the filelists
+   now include `tb/sva`).
+4. M8: RTL to GDS on SKY130.
+5. Timing, if more is wanted: physical measures only (`docs/synthesis.md`).
 
 ## Known limitations
 
@@ -215,6 +235,7 @@ Full reasoning in `docs/decisions.md`; this is an index.
 | 2026-11-03 | Synthesis-driven RTL changes: decoded selects, running addresses, descriptor fetch (ADR-016) | The first per-module report showed two thirds of the LUTs in unintended muxes |
 | 2026-11-04 | Descriptor table in a 1R1W RAM with per-word valid bits (ADR-017) | Removes the critical register-read mux and 5K flip-flops, keeps reset value and latencies |
 | 2026-11-05 | Keep every requant unit's copy of the layer constants in ECP5 synthesis (ADR-018) | Merged copies drove eight units from one register; 896 flip-flops buy a local route |
+| 2026-11-11 | Assertions in bound checkers, cover-property closure as a CI gate (ADR-019) | RTL stays free of verification code; unreached scenarios become a measured, failing fact |
 
 ## VCS run log
 

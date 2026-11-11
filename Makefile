@@ -51,9 +51,11 @@ PLUSARGS  ?= +seed=$(SEED) +vectors=$(abspath $(REQUANT_VECTORS)) +gemm_vectors=
 VERILATOR_LINT_FLAGS ?= --lint-only -Wall --timescale 1ns/1ps
 # Testbenches are built with one main() (tb/common/verilator_main.cpp, model
 # class Vtop) that also writes the cover-property database; --assert enables
-# the assertions bound from tb/sva.
+# the assertions bound from tb/sva (VERILATOR_ASSERT= builds without them, which
+# tb/sva/mutation_run.py uses as its control).
+VERILATOR_ASSERT     ?= --assert
 VERILATOR_SIM_FLAGS  ?= --cc --exe --build --timing --prefix Vtop -Wall -Wno-fatal --timescale 1ns/1ps -j 0 \
-                        --x-assign unique --x-initial unique --assert --coverage-user \
+                        --x-assign unique --x-initial unique $(VERILATOR_ASSERT) --coverage-user \
                         $(abspath tb/common/verilator_main.cpp)
 COV_DIR ?= $(BUILD_DIR)/cov
 VCS_FLAGS ?= -full64 -sverilog -timescale=1ns/1ps -debug_access+all

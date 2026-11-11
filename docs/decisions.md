@@ -259,5 +259,5 @@ This is the most important architectural decision in v1.
 - Rejected: assertions inside the RTL files (mixes synthesis and verification code, and `ifdef`s); covergroups
   (not available in the CI simulator; they belong to the class-based environment for the commercial simulator);
   code coverage as the metric (says what was executed, not which scenario was checked).
-- Cost: simulation time for the checkers; one shared `main()` for all Verilator testbenches so that the coverage
+- Cost: about 6% more regression time (120 s against 113 s for `make ci` from clean); one shared `main()` for all Verilator testbenches so that the coverage
   database is written; the properties avoid `##` and property operators, which makes a few of them longer.

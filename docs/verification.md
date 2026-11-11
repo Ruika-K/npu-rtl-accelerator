@@ -97,8 +97,10 @@ direction, a program using all 16 descriptors, and a blocked pixel write. Tests 
 (`axil_slave_tb` phase 4, the burst-shape transfers of the DMA phase, the NUM_DESC program in
 `npu_sequencer_tb`); the last became an environment assumption plus a cover in `pix_writer_sva`.
 
-**Do the assertions fire?** A mutation run injects one RTL defect at a time and records the first assertion that
-fails (results in `docs/STATUS.md`).
+**Do the assertions fire?** `tb/sva/mutation_run.py` injects one RTL defect at a time and runs the affected
+testbench with and without the assertions. In all 19 defects an assertion fails; the testbenches alone catch 16.
+The three that only an assertion sees are interface-contract violations that the surrounding logic happens to
+mask today: an extra beat in a padded tile, the pixel grant during a DMA, a pixel write without the grant.
 
 ## 3. Tools and how to run
 

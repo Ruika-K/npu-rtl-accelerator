@@ -84,8 +84,8 @@ testbench that contains the module runs its checker (`--assert`). Three kinds of
 | `npu_sequencer_sva` | Engine starts are exclusive single pulses with the matching opcode (FC in its 1x1 view); a run ends with exactly one of done or err, in the cycle busy falls; the per-layer counts add up to the total |
 | `npu_top_sva` | One engine at a time; DMA and a run exclusive; host memory accesses only while idle; the weight buffer never written during a run |
 
-The properties use `|->`, `|=>`, `$past`-free auxiliary registers, `$stable`, `$onehot0` and `$countones`: the
-subset Verilator 5.020 supports (no `##` delays, no property `and`). Multi-cycle facts are expressed with a few
+The properties use `|->`, `|=>`, `$stable`, `$onehot0` and `$countones`: the subset Verilator 5.020 supports
+(no `##` delays, no property `and`). Multi-cycle facts are expressed with a few
 reference registers inside the checker, which also keeps them independent of the DUT's state encoding.
 
 **Cover closure.** Every run writes its cover-property counts (`+cov=`, `tb/common/verilator_main.cpp`);

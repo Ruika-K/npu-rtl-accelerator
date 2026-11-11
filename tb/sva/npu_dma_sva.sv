@@ -29,7 +29,9 @@ module npu_dma_sva #(
   input logic        m_axi_wlast_o,
   input logic        m_axi_wvalid_o,
   input logic        m_axi_wready_i,
+  /* verilator lint_off UNUSEDSIGNAL */   // xRESP[1] alone tells an error
   input logic [1:0]  m_axi_bresp_i,
+  /* verilator lint_on UNUSEDSIGNAL */
   input logic        m_axi_bvalid_i,
   input logic        m_axi_bready_o,
   input logic [31:0] m_axi_araddr_o,
@@ -38,7 +40,9 @@ module npu_dma_sva #(
   input logic [1:0]  m_axi_arburst_o,
   input logic        m_axi_arvalid_o,
   input logic        m_axi_arready_i,
+  /* verilator lint_off UNUSEDSIGNAL */   // xRESP[1] alone tells an error
   input logic [1:0]  m_axi_rresp_i,
+  /* verilator lint_on UNUSEDSIGNAL */
   input logic        m_axi_rlast_i,
   input logic        m_axi_rvalid_i,
   input logic        m_axi_rready_o,

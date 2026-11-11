@@ -70,9 +70,10 @@ help:
 # ---------------------------------------------------------------------------
 lint: $(addprefix lint-,$(LINT_TOPS)) lint-synth-wrapper lint-sva
 
-# The assertion checkers of tb/sva, bound into the whole design
+# The assertion checkers of tb/sva, bound into the whole design. disable iff
+# reads the asynchronous resets synchronously, hence -Wno-SYNCASYNCNET.
 lint-sva:
-	$(VERILATOR) $(VERILATOR_LINT_FLAGS) --assert -f $(LINT_F) -f sim/filelists/sva.f -f sim/filelists/sva_chip.f \
+	$(VERILATOR) $(VERILATOR_LINT_FLAGS) --assert -Wno-SYNCASYNCNET -f $(LINT_F) -f sim/filelists/sva.f -f sim/filelists/sva_chip.f \
 	    --top-module chip_top
 
 lint-synth-wrapper:

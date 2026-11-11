@@ -10,7 +10,6 @@ module npu_sequencer_sva
   input logic                      clk_i,
   input logic                      rst_ni,
   input logic                      start_i,
-  input logic [4:0]                layer_cnt_i,
   input logic                      desc_rd_en_o,
   input logic                      desc_rd_gnt_i,
   input logic                      busy_o,
@@ -21,7 +20,9 @@ module npu_sequencer_sva
   input logic [NUM_DESC-1:0][31:0] layer_cycles_o,
   input logic [31:0]               total_cycles_o,
   input logic [31:0]               array_busy_cycles_o,
+  /* verilator lint_off UNUSEDSIGNAL */   // only the fields of the FC view are checked
   input desc_t                     eng_desc_o,
+  /* verilator lint_on UNUSEDSIGNAL */
   input logic                      conv_start_o,
   input logic                      conv_done_i,
   input logic                      pool_start_o,

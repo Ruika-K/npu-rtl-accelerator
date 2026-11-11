@@ -12,10 +12,14 @@ module act_buffer_sva
   input logic          clk_i,
   input logic          rst_ni,
   input logic          rd_en_i,
+  /* verilator lint_off UNUSEDSIGNAL */   // only the lane offset is covered
   input logic [AW-1:0] rd_addr_i,
+  /* verilator lint_on UNUSEDSIGNAL */
   input logic          rd_valid_o,
   input logic          wr_en_i,
+  /* verilator lint_off UNUSEDSIGNAL */   // only the lane offset is covered
   input logic [AW-1:0] wr_addr_i,
+  /* verilator lint_on UNUSEDSIGNAL */
   input logic [N-1:0]  wr_be_i
 );
 

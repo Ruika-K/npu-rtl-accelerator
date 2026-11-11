@@ -1,7 +1,8 @@
 `default_nettype none
 
-// Assertions for conv_engine, bound into every instance: the tile queue never
-// overflows or underflows, the shared weight-buffer port is never claimed by a
+// Assertions for conv_engine, bound into every instance: every tile enters the
+// array with exactly K_total beats, the tile queue never overflows or
+// underflows, the shared weight-buffer port is never claimed by a
 // beat and a bias prefetch together, writes happen only while busy and line up
 // with the requant pipeline, and done is a single pulse.
 module conv_engine_sva
@@ -25,6 +26,9 @@ module conv_engine_sva
   input logic         pf_issue_c,
   input logic         drain_start_c,
   input logic [N-1:0] rq_valid,
+  input logic         arr_valid_q,
+  input logic         arr_first_q,
+  input logic         arr_last_q,
   input logic [21:0]  k_total_q,
   input logic [21:0]  period_q
 );
@@ -41,6 +45,18 @@ module conv_engine_sva
       if (tq_level_q > tq_level_max_q) tq_level_max_q <= tq_level_q;
     end
   end
+
+  // Beats of the tile entering the array, counted from its first beat
+  logic [21:0] beats_q, beats_c;
+  assign beats_c = arr_first_q ? 22'd1 : beats_q + 22'd1;
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni)          beats_q <= '0;
+    else if (arr_valid_q) beats_q <= beats_c;
+  end
+
+  a_tile_beats: assert property (@(posedge clk_i) disable iff (!rst_ni)
+      arr_valid_q && arr_last_q |-> beats_c == k_total_q)
+    else $error("a tile entered the array with a beat count other than K_total");
 
   a_tq_no_overflow: assert property (@(posedge clk_i) disable iff (!rst_ni)
       g_tile_start_q |-> tq_level_q < 3'(TQ_DEPTH) || drain_start_c)

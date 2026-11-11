@@ -301,6 +301,13 @@ module npu_sequencer_tb
     check(gd && !ge && start_log.size() == 1 && start_log[0] == 0, "NOP layers skipped, one conv start");
     check_counters("NOP");
 
+    // ---- the longest program: every descriptor slot in use ----
+    desc_i = '0;
+    for (int i = 0; i < NUM_DESC; i++) desc_i[i] = mk(OP_CONV2D, 3, 1, 8, 8, 2, 4, 32'h0000, 32'h1000, 32'h0000, 32'h1000, 1);
+    run(NUM_DESC, gd, ge);
+    check(gd && !ge && start_log.size() == NUM_DESC, "NUM_DESC layers ran");
+    check_counters("NUM_DESC layers");
+
     // ---- descriptor errors, single layer ----
     desc_i = '0;
     desc_i[0] = mk(OP_CONV2D, 5, 2, 28, 28, 1, 6, 32'h0000, 32'h0400, 32'h00000, 32'h00100, 1);

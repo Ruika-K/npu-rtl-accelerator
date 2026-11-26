@@ -17,7 +17,7 @@ class npu_base_test extends uvm_test;
   endfunction
 
   function void end_of_elaboration_phase(uvm_phase phase);
-    uvm_root::get().set_timeout(1s, 1);
+    uvm_root::get().set_timeout(200ms, 1);           // npu_full_test needs 27 ms
     // UVM 1800.2-2020 warns whenever the mirror of a volatile field is read,
     // which the predictor's check_on_read does for every read of a register
     // with volatile fields. Those fields are excluded from the compare, so the

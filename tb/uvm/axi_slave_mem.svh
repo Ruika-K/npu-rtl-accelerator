@@ -30,6 +30,7 @@ class axi_slave_mem extends uvm_component;
 
   bit [7:0]    mem[bit [31:0]];     // sparse; unwritten bytes read as default_byte()
   int unsigned max_stall = 3;
+  int unsigned handshake_limit = 10_000;  // watchdog inside a burst (idle waits for AW / AR are unlimited)
   bit [31:0]   err_lo = '1, err_hi = '1;   // [err_lo, err_hi): bursts starting here get SLVERR
 
   function new(string name, uvm_component parent);
@@ -77,6 +78,12 @@ class axi_slave_mem extends uvm_component;
     return $urandom_range(max_stall);
   endfunction
 
+  task automatic tick(ref int unsigned n, input string what, input axi_burst_item t);
+    @(vif.slv_cb);
+    if (++n > handshake_limit)
+      `uvm_fatal("AXI/HANG", $sformatf("no %s after %0d cycles (%s)", what, handshake_limit, t.convert2string()))
+  endtask
+
   task automatic write_loop();
     forever begin
       axi_burst_item t = axi_burst_item::type_id::create("wr");
@@ -97,7 +104,10 @@ class axi_slave_mem extends uvm_component;
           repeat (n) @(vif.slv_cb);
         end
         vif.slv_cb.wready <= 1'b1;
-        do @(vif.slv_cb); while (!vif.slv_cb.wvalid);
+        begin
+          int unsigned w = 0;
+          do tick(w, "WVALID", t); while (!vif.slv_cb.wvalid);
+        end
         t.data.push_back(vif.slv_cb.wdata);
         t.strb.push_back(vif.slv_cb.wstrb);
         if (vif.slv_cb.wlast != (b == int'(t.len)))
@@ -111,7 +121,10 @@ class axi_slave_mem extends uvm_component;
       repeat (stall_cycles()) @(vif.slv_cb);
       vif.slv_cb.bresp  <= t.resp;
       vif.slv_cb.bvalid <= 1'b1;
-      do @(vif.slv_cb); while (!vif.slv_cb.bready);
+      begin
+        int unsigned w = 0;
+        do tick(w, "BREADY", t); while (!vif.slv_cb.bready);
+      end
       vif.slv_cb.bvalid <= 1'b0;
       ap.write(t);
     end
@@ -143,7 +156,10 @@ class axi_slave_mem extends uvm_component;
         vif.slv_cb.rresp  <= err ? 2'b10 : 2'b00;
         vif.slv_cb.rlast  <= (b == int'(t.len));
         vif.slv_cb.rvalid <= 1'b1;
-        do @(vif.slv_cb); while (!vif.slv_cb.rready);
+        begin
+          int unsigned w = 0;
+          do tick(w, "RREADY", t); while (!vif.slv_cb.rready);
+        end
         t.data.push_back(d);
       end
       vif.slv_cb.rvalid <= 1'b0;

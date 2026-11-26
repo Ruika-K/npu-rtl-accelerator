@@ -57,6 +57,10 @@ class axil_driver extends uvm_driver #(axil_item);
 
   virtual axil_if vif;
 
+  // Watchdog: a handshake that has not completed after this many cycles is a
+  // hung slave, reported at once instead of at the test timeout.
+  int unsigned handshake_limit = 10_000;
+
   function new(string name, uvm_component parent);
     super.new(name, parent);
   endfunction
@@ -66,6 +70,13 @@ class axil_driver extends uvm_driver #(axil_item);
     if (!uvm_config_db #(virtual axil_if)::get(this, "", "vif", vif))
       `uvm_fatal("AXIL/NOVIF", "no virtual axil_if")
   endfunction
+
+  // One clocking event of a handshake wait, counted against the watchdog.
+  task automatic tick(ref int unsigned n, input string what);
+    @(vif.drv_cb);
+    if (++n > handshake_limit)
+      `uvm_fatal("AXIL/HANG", $sformatf("no %s after %0d cycles (%s)", what, handshake_limit, req.convert2string()))
+  endtask
 
   task run_phase(uvm_phase phase);
     vif.master_idle();
@@ -83,40 +94,44 @@ class axil_driver extends uvm_driver #(axil_item);
   // Each valid is raised right after a clocking event; the handshake is the
   // first later event at which the sampled ready is high.
   task automatic do_write(axil_item t);
+    int unsigned n_b = 0;
     fork
       begin
+        int unsigned n = 0;
         repeat (t.aw_delay) @(vif.drv_cb);
         vif.drv_cb.awaddr  <= t.addr;
         vif.drv_cb.awprot  <= 3'b000;
         vif.drv_cb.awvalid <= 1'b1;
-        do @(vif.drv_cb); while (!vif.drv_cb.awready);
+        do tick(n, "AWREADY"); while (!vif.drv_cb.awready);
         vif.drv_cb.awvalid <= 1'b0;
       end
       begin
+        int unsigned n = 0;
         repeat (t.w_delay) @(vif.drv_cb);
         vif.drv_cb.wdata  <= t.data;
         vif.drv_cb.wstrb  <= t.strb;
         vif.drv_cb.wvalid <= 1'b1;
-        do @(vif.drv_cb); while (!vif.drv_cb.wready);
+        do tick(n, "WREADY"); while (!vif.drv_cb.wready);
         vif.drv_cb.wvalid <= 1'b0;
       end
     join
     repeat (t.resp_delay) @(vif.drv_cb);
     vif.drv_cb.bready <= 1'b1;
-    do @(vif.drv_cb); while (!vif.drv_cb.bvalid);
+    do tick(n_b, "BVALID"); while (!vif.drv_cb.bvalid);
     t.resp = vif.drv_cb.bresp;
     vif.drv_cb.bready <= 1'b0;
   endtask
 
   task automatic do_read(axil_item t);
+    int unsigned n_ar = 0, n_r = 0;
     vif.drv_cb.araddr  <= t.addr;
     vif.drv_cb.arprot  <= 3'b000;
     vif.drv_cb.arvalid <= 1'b1;
-    do @(vif.drv_cb); while (!vif.drv_cb.arready);
+    do tick(n_ar, "ARREADY"); while (!vif.drv_cb.arready);
     vif.drv_cb.arvalid <= 1'b0;
     repeat (t.resp_delay) @(vif.drv_cb);
     vif.drv_cb.rready <= 1'b1;
-    do @(vif.drv_cb); while (!vif.drv_cb.rvalid);
+    do tick(n_r, "RVALID"); while (!vif.drv_cb.rvalid);
     t.data = vif.drv_cb.rdata;
     t.resp = vif.drv_cb.rresp;
     vif.drv_cb.rready <= 1'b0;

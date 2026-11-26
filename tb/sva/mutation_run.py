@@ -87,7 +87,8 @@ def run_cocotb():
 
 
 def run_uvm():
-    log, code = make(["uvm", "UVM_ASSERT=", "UVM_TESTS=npu_full_test"], timeout=2400)
+    # Verilator turns assertions on by default since 5.04x, so they are switched off explicitly.
+    log, code = make(["uvm", "UVM_ASSERT=--no-assert", "UVM_TESTS=npu_full_test"], timeout=2400)
     if log == "TIMEOUT":
         return "times out"
     if "uvm_build.log" in log and "PASS" not in log and "FAIL" not in log:

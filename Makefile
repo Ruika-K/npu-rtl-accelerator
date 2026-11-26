@@ -189,6 +189,7 @@ UVM_PLUSARGS ?= +layer_vectors=$(abspath $(LAYER_VECTORS)) +desc_vectors=$(abspa
 VCS_UVM      ?= uvm-1.2
 
 VERILATOR_UVM ?= $(VERILATOR)
+# --no-assert compiles the bound checkers out (Verilator 5.052+ enables assertions by default)
 UVM_ASSERT    ?= --assert
 UVM_VL_DIR    := $(BUILD_DIR)/verilator/npu_uvm
 UVM_ABS       := $(abspath $(UVM_SRC))

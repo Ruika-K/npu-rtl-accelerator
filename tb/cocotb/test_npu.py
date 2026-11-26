@@ -20,6 +20,9 @@ from npu_env.env import NpuEnv
 from npu_env.sequences import DmaSeq, ErrorSeq, ProgramSeq, RandomLayerSeq
 
 SEED = int(os.environ.get("NPU_SEED", "1"))
+# Simulated time per test (the longest needs under 1 ms): a DUT that stops
+# answering fails its test instead of hanging the run.
+TEST_TIMEOUT_MS = 3
 
 
 class NpuTest(uvm_test):
@@ -52,23 +55,23 @@ class NpuTest(uvm_test):
         self.drop_objection()
 
 
-@pyuvm.test()
+@pyuvm.test(timeout_time=TEST_TIMEOUT_MS, timeout_unit="ms")
 class RandomLayerTest(NpuTest):
     seq_class = RandomLayerSeq
     seq_args = {"n": 40}
 
 
-@pyuvm.test()
+@pyuvm.test(timeout_time=TEST_TIMEOUT_MS, timeout_unit="ms")
 class ProgramTest(NpuTest):
     seq_class = ProgramSeq
 
 
-@pyuvm.test()
+@pyuvm.test(timeout_time=TEST_TIMEOUT_MS, timeout_unit="ms")
 class ErrorTest(NpuTest):
     seq_class = ErrorSeq
 
 
-@pyuvm.test()
+@pyuvm.test(timeout_time=TEST_TIMEOUT_MS, timeout_unit="ms")
 class DmaTest(NpuTest):
     seq_class = DmaSeq
 

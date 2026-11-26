@@ -16,6 +16,7 @@ The RTL tree must be clean (git); every file is restored after its run.
 """
 import os
 import re
+import signal
 import subprocess
 import sys
 
@@ -51,25 +52,33 @@ EXTRA = {
 }
 
 
-def run(target, with_assertions):
-    cmd = ["make", target] + ([] if with_assertions else ["VERILATOR_ASSERT="])
+def make(args, timeout=1800):
+    """(output, exit code) of make; on a timeout the whole process group (simulator included) is killed."""
+    p = subprocess.Popen(["make"] + args, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         start_new_session=True)
     try:
-        p = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=1800)
-        return p.stdout + p.stderr
+        out, _ = p.communicate(timeout=timeout)
+        return out, p.returncode
     except subprocess.TimeoutExpired:
-        return "TIMEOUT"
+        os.killpg(p.pid, signal.SIGKILL)
+        p.communicate()
+        return "TIMEOUT", None
+
+
+def run(target, with_assertions):
+    return make([target] + ([] if with_assertions else ["VERILATOR_ASSERT="]))[0]
 
 
 def run_cocotb():
-    try:
-        p = subprocess.run(["make", "cocotb", "COCOTB_ASSERT="], cwd=REPO, capture_output=True, text=True, timeout=1800)
-        log = p.stdout + p.stderr
-    except subprocess.TimeoutExpired:
+    log, code = make(["cocotb", "COCOTB_ASSERT="])
+    if log == "TIMEOUT":
         return "times out"
     errs = sum(int(n) for n in re.findall(r"scoreboard: .*?, (\d+) errors", log))
     if errs:
         return "fails (%d scoreboard errors)" % errs
-    return "passes" if p.returncode == 0 else "fails"
+    if "SimTimeoutError" in log:
+        return "fails (test timeout)"
+    return "passes" if code == 0 else "fails"
 
 
 def main():

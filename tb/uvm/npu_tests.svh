@@ -18,6 +18,11 @@ class npu_base_test extends uvm_test;
 
   function void end_of_elaboration_phase(uvm_phase phase);
     uvm_root::get().set_timeout(1s, 1);
+    // UVM 1800.2-2020 warns whenever the mirror of a volatile field is read,
+    // which the predictor's check_on_read does for every read of a register
+    // with volatile fields. Those fields are excluded from the compare, so the
+    // warning carries no information here.
+    uvm_root::get().set_report_id_action("UVM/FLD/GET_MIRRORED_VAL/VOL", UVM_NO_ACTION);
     if (uvm_report_enabled(UVM_HIGH)) uvm_root::get().print_topology();
   endfunction
 
@@ -119,9 +124,14 @@ class npu_lenet_test extends npu_base_test;
 endclass
 
 // Everything in one simulation: reset values, layers, descriptor errors, DMA, the network.
+// Fails unless every covergroup bin was hit (functional-coverage closure).
 class npu_full_test extends npu_base_test;
   `uvm_component_utils(npu_full_test)
   function new(string name, uvm_component parent); super.new(name, parent); endfunction
+
+  function void connect_phase(uvm_phase phase);
+    env.cov.require_closure = 1;
+  endfunction
 
   task run_body();
     uvm_reg_hw_reset_seq reset_seq = uvm_reg_hw_reset_seq::type_id::create("reset_seq");

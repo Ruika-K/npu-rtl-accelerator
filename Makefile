@@ -8,7 +8,8 @@
 #   make integ       Layer cases, the LeNet-5 networks (AXI4-Lite) and chip_top (APB + pixel stream)
 #   make integ-mnist One network (integ-<net>, IMAGES=<n> to limit the images)
 #   make cocotb      pyuvm environment for npu_top (tb/cocotb, needs tb/cocotb/requirements.txt)
-#   make uvm-elab    SystemVerilog UVM environment (tb/uvm) compiled and elaborated with slang
+#   make uvm         SystemVerilog UVM environment (tb/uvm), every test (Verilator 5.052+, VERILATOR_UVM)
+#   make uvm-elab    SystemVerilog UVM environment compiled and elaborated with slang
 #   make cover       Cover properties of tb/sva merged over all runs; fails if one was never reached
 #   make ci          lint + model-test + unit + integ + cocotb + uvm-elab + cover (what GitHub Actions runs)
 #   make synth       sv2v + Yosys (xc7 resources) and nextpnr-ecp5 (Fmax), see synth/README.md
@@ -65,7 +66,7 @@ VCS_FLAGS ?= -full64 -sverilog -timescale=1ns/1ps -debug_access+all
 
 # lint-%, unit-% and vcs-unit-% are pattern rules; GNU make skips pattern
 # search for .PHONY targets, so they are deliberately not listed here.
-.PHONY: help lint lint-synth-wrapper lint-sva model-test vectors unit integ integ-layers integ-chip cocotb uvm-elab vcs-uvm cover ci synth synth-xilinx synth-ecp5 compile run clean
+.PHONY: help lint lint-synth-wrapper lint-sva model-test vectors unit integ integ-layers integ-chip cocotb uvm uvm-elab vcs-uvm cover ci synth synth-xilinx synth-ecp5 compile run clean
 
 help:
 	@sed -n '2,18p' Makefile | sed 's/^# \{0,1\}//'
@@ -173,9 +174,11 @@ cocotb:
 	@if [ -f tb/cocotb/coverage.dat ]; then mv tb/cocotb/coverage.dat $(COV_DIR)/cocotb.dat; fi
 	python3 tb/cocotb/check_results.py $(BUILD_DIR)/cocotb/results.xml
 
-# SystemVerilog UVM environment for npu_top (tb/uvm). No open-source simulator
-# here runs UVM, so CI compiles and elaborates it with slang against the
-# Accellera library (uvm-elab); vcs-uvm runs the tests.
+# SystemVerilog UVM environment for npu_top (tb/uvm), on the Accellera library.
+#   uvm       builds it with Verilator 5.052 or later (VERILATOR_UVM; the first
+#             releases that run UVM) and runs every test in UVM_TESTS
+#   uvm-elab  compiles and elaborates it with slang (any warning fails)
+#   vcs-uvm   the same tests on VCS
 UVM_CORE_TAG ?= 2020.3.1
 UVM_SRC      ?= $(BUILD_DIR)/uvm-core/src
 UVM_TESTS    ?= npu_reg_reset_test npu_reg_bit_bash_test npu_mem_walk_test npu_layer_test npu_desc_err_test \
@@ -184,6 +187,21 @@ UVM_PLUSARGS ?= +layer_vectors=$(abspath $(LAYER_VECTORS)) +desc_vectors=$(abspa
                 +program=$(abspath model/data/mnist/program.txt) +images=$(IMAGES) +UVM_NO_RELNOTES
 # uvm-1.2, or uvm-ieee-2020 on VCS releases that ship IEEE 1800.2-2020
 VCS_UVM      ?= uvm-1.2
+
+VERILATOR_UVM ?= $(VERILATOR)
+UVM_ASSERT    ?= --assert
+UVM_VL_DIR    := $(BUILD_DIR)/verilator/npu_uvm
+UVM_ABS       := $(abspath $(UVM_SRC))
+
+# Runs each test of UVM_TESTS with the simulator $(1); a test passes on its TEST PASSED line.
+define run_uvm_tests
+	@for t in $(UVM_TESTS); do \
+	  $(1) +UVM_TESTNAME=$$t $(UVM_PLUSARGS) > $(BUILD_DIR)/logs/uvm_$$t.log 2>&1; \
+	  if grep -q 'TEST PASSED' $(BUILD_DIR)/logs/uvm_$$t.log; then \
+	    echo "PASS $$t: $$(grep -h -o -E '(checked|[0-9]+ (images|layer cases|error vectors)).*' $(BUILD_DIR)/logs/uvm_$$t.log | tr '\n' ' ')"; \
+	  else echo "FAIL $$t (see $(BUILD_DIR)/logs/uvm_$$t.log)"; grep -E '^UVM_(ERROR|FATAL) ' $(BUILD_DIR)/logs/uvm_$$t.log | head -5; exit 1; fi; \
+	done
+endef
 
 $(UVM_SRC)/uvm_pkg.sv:
 	rm -rf $(BUILD_DIR)/uvm-core
@@ -195,10 +213,18 @@ uvm-elab: $(UVM_SRC)/uvm_pkg.sv
 vcs-uvm: vectors
 	mkdir -p $(BUILD_DIR)/vcs/uvm $(BUILD_DIR)/logs
 	$(VCS) $(VCS_FLAGS) -ntb_opts $(VCS_UVM) -f sim/filelists/uvm.f -top npu_uvm_top -o $(BUILD_DIR)/vcs/uvm/simv
-	@for t in $(UVM_TESTS); do \
-	  $(BUILD_DIR)/vcs/uvm/simv +UVM_TESTNAME=$$t +ntb_random_seed=$(SEED) $(UVM_PLUSARGS) > $(BUILD_DIR)/logs/uvm_$$t.log 2>&1; \
-	  grep -q 'TEST PASSED' $(BUILD_DIR)/logs/uvm_$$t.log && echo "PASS $$t" || { echo "FAIL $$t (see $(BUILD_DIR)/logs/uvm_$$t.log)"; exit 1; }; \
-	done
+	$(call run_uvm_tests,$(BUILD_DIR)/vcs/uvm/simv +ntb_random_seed=$(SEED))
+
+# The HDL backdoor of the UVM DPI library has no Verilator backend and is not
+# used: +define+UVM_HDL_NO_DPI, and tb/uvm/uvm_dpi_verilator.cc compiles the rest.
+uvm: vectors $(UVM_SRC)/uvm_pkg.sv
+	mkdir -p $(UVM_VL_DIR) $(BUILD_DIR)/logs
+	$(VERILATOR_UVM) --version
+	$(VERILATOR_UVM) --binary --vpi --timing -j 0 -Wno-fatal -Wno-lint -Wno-style $(UVM_ASSERT) --timescale 1ns/1ps \
+	    +define+UVM_HDL_NO_DPI +incdir+$(UVM_ABS) $(UVM_ABS)/uvm_pkg.sv -f sim/filelists/uvm.f --top-module npu_uvm_top \
+	    --Mdir $(UVM_VL_DIR) -o npu_uvm $(abspath tb/uvm/uvm_dpi_verilator.cc) -CFLAGS -I$(UVM_ABS)/dpi \
+	    > $(BUILD_DIR)/logs/uvm_build.log 2>&1 || { tail -30 $(BUILD_DIR)/logs/uvm_build.log; exit 1; }
+	$(call run_uvm_tests,$(UVM_VL_DIR)/npu_uvm +verilator+seed+$(SEED))
 
 # Cover-property closure: every cover property of tb/sva must have been reached
 # by at least one of the runs above (their databases are in $(COV_DIR)), or be

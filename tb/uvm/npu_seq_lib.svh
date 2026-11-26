@@ -30,8 +30,7 @@ class npu_base_seq extends uvm_sequence #(axil_item);
   task wr_resp(bit [31:0] addr, bit [31:0] data, bit [3:0] strb, output bit [1:0] resp);
     axil_item t = axil_item::type_id::create("wr");
     start_item(t);
-    if (!t.randomize() with { write == 1; addr == local::addr; data == local::data; strb == local::strb; })
-      `uvm_fatal("SEQ/RAND", "randomize failed")
+    t.set(1, addr, data, strb);
     finish_item(t);
     resp = t.resp;
   endtask
@@ -39,8 +38,7 @@ class npu_base_seq extends uvm_sequence #(axil_item);
   task rd_resp(bit [31:0] addr, output bit [31:0] data, output bit [1:0] resp);
     axil_item t = axil_item::type_id::create("rd");
     start_item(t);
-    if (!t.randomize() with { write == 0; addr == local::addr; })
-      `uvm_fatal("SEQ/RAND", "randomize failed")
+    t.set(0, addr);
     finish_item(t);
     data = t.data;
     resp = t.resp;

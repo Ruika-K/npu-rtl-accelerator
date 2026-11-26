@@ -12,6 +12,7 @@ class npu_coverage extends uvm_component;
   uvm_analysis_imp_axi  #(axi_burst_item, npu_coverage) axi_imp;
 
   npu_reg_block regs;
+  bit           require_closure;    // set by npu_full_test: every bin must be hit
 
   // sampled values
   local int unsigned s_window;      // 0 reg, 1 desc, 2 abuf, 3 wbuf, 4 unmapped
@@ -129,9 +130,22 @@ class npu_coverage extends uvm_component;
     cg_burst.sample();
   endfunction
 
+  function void check_phase(uvm_phase phase);
+    real c[5] = '{cg_axil.get_inst_coverage(), cg_layer.get_inst_coverage(), cg_run.get_inst_coverage(),
+                  cg_dma.get_inst_coverage(), cg_burst.get_inst_coverage()};
+    string names[5] = '{"axil", "layer", "run", "dma", "burst"};
+    if (!require_closure) return;
+    foreach (c[i])
+      if (c[i] < 100.0) `uvm_error("COV/CLOSURE", $sformatf("cg_%s at %.1f%%, closure requires 100%%", names[i], c[i]))
+  endfunction
+
   function void report_phase(uvm_phase phase);
     `uvm_info("COV", $sformatf("axil %.1f%%  layer %.1f%%  run %.1f%%  dma %.1f%%  burst %.1f%%",
               cg_axil.get_inst_coverage(), cg_layer.get_inst_coverage(), cg_run.get_inst_coverage(),
               cg_dma.get_inst_coverage(), cg_burst.get_inst_coverage()), UVM_LOW)
+    `uvm_info("COV", $sformatf("layer: op %.1f%%  k %.1f%%  pad %.1f%%  relu %.1f%%  conv k x pad %.1f%%  op x relu %.1f%%",
+              cg_layer.op.get_inst_coverage(), cg_layer.k.get_inst_coverage(), cg_layer.pad.get_inst_coverage(),
+              cg_layer.relu.get_inst_coverage(), cg_layer.conv_k_x_pad.get_inst_coverage(),
+              cg_layer.op_x_relu.get_inst_coverage()), UVM_LOW)
   endfunction
 endclass

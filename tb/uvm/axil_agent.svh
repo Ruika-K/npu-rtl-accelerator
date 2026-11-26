@@ -8,20 +8,33 @@ class axil_item extends uvm_sequence_item;
   rand bit [3:0]    strb;
   bit [1:0]         resp;           // filled in by the driver / monitor
 
-  // Handshake timing, in cycles. Writes may present AW before W, W before AW, or both together.
-  rand int unsigned delay;          // before the first valid
-  rand int unsigned aw_delay;
-  rand int unsigned w_delay;
-  rand int unsigned resp_delay;     // before BREADY / RREADY
+  // Handshake timing, in cycles, drawn when the item is created (writes may
+  // present AW before W, W before AW, or both together). It is not left to
+  // randomize(): the items of register and memory accesses have fixed address
+  // and data, and a constraint solve per transaction costs more than the
+  // transaction itself on simulators that call an external solver.
+  int unsigned delay;               // before the first valid, 0..3
+  int unsigned aw_delay;            // 0..3
+  int unsigned w_delay;             // 0..3
+  int unsigned resp_delay;          // before BREADY / RREADY: 0 (60%), 1..3 (30%), 4..12 (10%)
 
-  constraint c_strb   { !write -> strb == 4'hF; }
-  constraint c_timing { delay inside {[0:3]}; aw_delay inside {[0:3]}; w_delay inside {[0:3]};
-                        resp_delay dist {0 := 6, [1:3] := 3, [4:12] := 1}; }
+  constraint c_strb { !write -> strb == 4'hF; }
 
   `uvm_object_utils(axil_item)
 
   function new(string name = "axil_item");
+    int unsigned r;
     super.new(name);
+    r = $urandom_range(9);
+    delay      = $urandom_range(3);
+    aw_delay   = $urandom_range(3);
+    w_delay    = $urandom_range(3);
+    resp_delay = (r < 6) ? 0 : (r < 9) ? $urandom_range(3, 1) : $urandom_range(12, 4);
+  endfunction
+
+  // A fixed access; the handshake timing stays as drawn.
+  function void set(bit is_write, bit [31:0] a, bit [31:0] d = '0, bit [3:0] s = 4'hF);
+    write = is_write; addr = a; data = is_write ? d : '0; strb = is_write ? s : 4'hF;
   endfunction
 
   function void do_copy(uvm_object rhs);
@@ -207,11 +220,7 @@ class axil_reg_adapter extends uvm_reg_adapter;
 
   virtual function uvm_sequence_item reg2bus(const ref uvm_reg_bus_op rw);
     axil_item t = axil_item::type_id::create("reg_item");
-    if (!t.randomize() with { write == (rw.kind == UVM_WRITE); })
-      `uvm_fatal("AXIL/RAND", "randomize failed")
-    t.addr = 32'(rw.addr);
-    t.data = 32'(rw.data);
-    t.strb = (rw.kind == UVM_WRITE) ? 4'(rw.byte_en) : 4'hF;
+    t.set(rw.kind == UVM_WRITE, 32'(rw.addr), 32'(rw.data), 4'(rw.byte_en));
     return t;
   endfunction
 

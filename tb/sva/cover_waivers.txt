@@ -1,0 +1,5 @@
+# Cover properties that no test is expected to reach, one per line:
+#   <checker>.<cover property>: <reason>
+# make cover fails for a property with zero hits that is not listed here, and
+# for a listed property that is reached (a stale waiver). Empty: every cover
+# property is reached by the regression.

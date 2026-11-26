@@ -60,12 +60,47 @@ Rules:
 4. Error injection: at least one case per error code at the unit level (M3) and an error descriptor with recovery
    at the top level (M4).
 
-### 2.3 Assertions (SVA in `tb/common/`, bound to the RTL)
+### 2.3 Assertions and cover properties (SVA in `tb/sva/`, bound to the RTL)
 
-- AXI4-Lite: once valid is high it must not drop or change data before ready; bresp / rresp are only OKAY or SLVERR.
-- Memory: engine writes and host writes never happen in the same cycle; read addresses stay in range.
-- Array: the number of valid cycles between `first` and `last` equals K_total; shadows are not overwritten during a drain (tile period >= ARR_N).
-- Sequencer: no engine start while busy is 0; done and err are mutually exclusive.
+One checker module per RTL module, attached with `bind`, so the RTL files carry no verification code and every
+testbench that contains the module runs its checker (`--assert`). Three kinds of property, by name prefix:
+
+- `m_*` (`assume`): what the environment must do, for example AXI valid held until ready, the tile period of at
+  least ARR_N, an acknowledge no earlier than the cycle after the request. In simulation they check the
+  testbenches and the neighbouring RTL.
+- `a_*` (`assert`): what the module guarantees.
+- `c_*` (`cover`): scenarios the regression must reach.
+
+| Checker | Asserted |
+| --- | --- |
+| `axil_slave_sva` | AXI4-Lite handshakes on all five channels; AW and W accepted together; one transaction in flight; each response belongs to an accepted and acknowledged request and carries its error flag and read data (a small reference model); one request pulse per transaction with the accepted payload |
+| `npu_dma_sva` | AXI4 master handshakes; every burst 64-bit INCR, aligned, at most MAX_BURST beats, never across a 4 KB boundary; WLAST on the last beat; one burst outstanding; done only with exactly `len` bytes moved and no error response; nothing driven while idle |
+| `async_fifo_sva` | Gray pointers are the code of the binary pointers and change one bit per step; occupancy never above DEPTH; `rd_valid_o` only with a word stored; the read word held until taken |
+| `pix_writer_sva` | Writes only with the grant; byte enables a run of low lanes; no stream byte taken while a pack waits |
+| `requant_unit_sva` | `valid_o` is `valid_i` delayed by RQ_PIPE_LAT; `q_o` inside [act_min, act_max] |
+| `act_buffer_sva`, `weight_buffer_sva` | Read valid exactly ABUF_RD_LAT / WBUF_RD_LAT cycles after the request |
+| `systolic_array_sva` | The drain starts exactly N cycles after the last beat, only then, and presents columns 0..N-1 in order without a gap |
+| `conv_engine_sva` | Tile queue never overflows or underflows and is empty at done; exactly K_total beats per tile; the weight port is never claimed by a beat and a bias prefetch together; writes only with requant results; memory accesses only while busy |
+| `npu_sequencer_sva` | Engine starts are exclusive single pulses with the matching opcode (FC in its 1x1 view); a run ends with exactly one of done or err, in the cycle busy falls; the per-layer counts add up to the total |
+| `npu_top_sva` | One engine at a time; DMA and a run exclusive; host memory accesses only while idle; the weight buffer never written during a run |
+
+The properties use `|->`, `|=>`, `$stable`, `$onehot0` and `$countones`: the subset Verilator 5.020 supports
+(no `##` delays, no property `and`). Multi-cycle facts are expressed with a few
+reference registers inside the checker, which also keeps them independent of the DUT's state encoding.
+
+**Cover closure.** Every run writes its cover-property counts (`+cov=`, `tb/common/verilator_main.cpp`);
+`make cover` merges them over all testbenches and fails if a cover property was never reached, unless
+`tb/sva/cover_waivers.txt` lists it with a reason (a waiver for a property that is reached fails too). The first
+report found eight scenarios no test reached: B and R waiting for BREADY / RREADY (the BFM's response delay was
+shorter than the slave's response time), a single-beat DMA burst and a burst cut by a 4 KB boundary in either
+direction, a program using all 16 descriptors, and a blocked pixel write. Tests were added for the first seven
+(`axil_slave_tb` phase 4, the burst-shape transfers of the DMA phase, the NUM_DESC program in
+`npu_sequencer_tb`); the last became an environment assumption plus a cover in `pix_writer_sva`.
+
+**Do the assertions fire?** `tb/sva/mutation_run.py` injects one RTL defect at a time and runs the affected
+testbench with and without the assertions. In all 19 defects an assertion fails; the testbenches alone catch 16.
+The three that only an assertion sees are interface-contract violations that the surrounding logic happens to
+mask today: an extra beat in a padded tile, the pixel grant during a DMA, a pixel write without the grant.
 
 ## 3. Tools and how to run
 
@@ -87,10 +122,12 @@ Constraints:
 - Every testbench ends with a `PASS:` or `FAIL:` line and exits via `$finish` / `$fatal`; the Makefile judges by the `PASS` line in the log.
 - Each unit testbench has its own filelist `sim/filelists/unit_<module>.f`, shared by Verilator and VCS;
   `make unit-<module>` runs Verilator, `make vcs-unit-<module>` runs VCS.
-- `make lint`, `make model-test`, `make unit` and `make integ` make up `make ci`, which GitHub Actions runs in full.
+- `make lint`, `make model-test`, `make unit`, `make integ` and `make cover` make up `make ci`, which GitHub
+  Actions runs in full.
 - RTL lint is `-Wall` with warnings fatal; testbench builds tolerate warnings, but known checker-style warnings are
   annotated with a local `lint_off` and a reason.
-- Coverage: one functional-point review with Verilator `--coverage` in M5, without chasing a number.
+- Coverage: functional scenarios are cover properties in `tb/sva` with a closure check (section 2.3); code
+  coverage is not chased.
 
 ## 4. Definition of done per milestone
 

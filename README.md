@@ -23,6 +23,8 @@ reproduce with open-source tools.
   ([docs/synthesis.md](docs/synthesis.md)).
 - **Reproducible verification.** Pure-integer Python reference, self-checking SystemVerilog testbenches,
   Verilator lint and simulation in GitHub Actions, and a whole LeNet-5 that matches the model bit for bit.
+  SystemVerilog assertions are bound to the RTL in every testbench, and CI fails if one of their cover
+  properties is never reached ([docs/verification.md](docs/verification.md)).
 
 ## Repository layout
 
@@ -38,6 +40,7 @@ reproduce with open-source tools.
 │   └── chip/                # chip_top: reset sync, clock gate, APB bridge, async FIFO, pixel writer
 ├── tb/
 │   ├── common/              # SV reference functions, AXI4-Lite and APB master BFMs, AXI4 slave memory model
+│   ├── sva/                 # Assertion checkers bound to the RTL, cover-property report
 │   ├── unit/                # One self-checking testbench per module
 │   └── integration/         # npu_top through AXI4-Lite, LeNet-5 networks, chip_top with two clocks
 ├── model/                   # Python integer golden model, vector generators, self-test
@@ -54,7 +57,7 @@ reproduce with open-source tools.
 Requirements: Verilator 5.x and Python 3 (no other dependencies for simulation).
 
 ```sh
-make ci                 # lint + Python self-test + all unit testbenches + layer cases + LeNet-5 on MNIST
+make ci                 # lint + Python self-test + unit testbenches + layer cases + both networks + cover closure
 ```
 
 ```sh

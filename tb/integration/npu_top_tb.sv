@@ -338,6 +338,34 @@ module npu_top_tb
     u_mem.err_lo = 32'hFFFF_FFFF; u_mem.err_hi = 32'hFFFF_FFFF;
     dma_run(1'b0, 1'b0, ext_img, 32'h100, 64, status);
     check(status[1] == 1'b1 && status[2] == 1'b0, "DMA works again after errors");
+
+    // burst shapes the transfers above never produce (found by the cover
+    // properties of npu_dma_sva): the external address starts below a 4 KB
+    // boundary, so the first burst is cut short and the transfer continues
+    // after it, and single-beat transfers. Load then store, and compare the
+    // two external regions.
+    for (int i = 0; i < 264; i++) u_mem.mem[32'h41FC8 + i] = 8'(i * 7 + 3);
+    dma_run(1'b0, 1'b0, 32'h41FC8, 32'h200, 256, status);     // 7 beats to 0x42000, then 16, then 9
+    check(status[1] == 1'b1 && status[2] == 1'b0, "DMA load across a 4 KB boundary");
+    dma_run(1'b1, 1'b0, 32'h52FD8, 32'h200, 256, status);     // 5 beats to 0x53000, then 16, then 11
+    check(status[1] == 1'b1 && status[2] == 1'b0, "DMA store across a 4 KB boundary");
+    mism = 0;
+    for (int i = 0; i < 256; i++) begin
+      n_checked++;
+      if (u_mem.mem[32'h52FD8 + i] !== u_mem.mem[32'h41FC8 + i]) mism++;
+    end
+    check(mism == 0, $sformatf("data moved across the 4 KB boundaries (%0d mismatches)", mism));
+    dma_run(1'b0, 1'b0, 32'h420C0, 32'h400, 8, status);       // one beat
+    check(status[1] == 1'b1 && status[2] == 1'b0, "DMA single-beat load");
+    dma_run(1'b1, 1'b0, 32'h54000, 32'h400, 8, status);
+    check(status[1] == 1'b1 && status[2] == 1'b0, "DMA single-beat store");
+    mism = 0;
+    for (int i = 0; i < 8; i++) begin
+      n_checked++;
+      if (u_mem.mem[32'h54000 + i] !== u_mem.mem[32'h420C0 + i]) mism++;
+    end
+    check(mism == 0, "single beat moved");
+    check(u_mem.n_proto_errors == 0, "no AXI protocol violations in the burst-shape transfers");
     $display("dma: %0d AW, %0d AR, %0d write beats, %0d read beats", u_mem.n_aw, u_mem.n_ar, u_mem.n_wbeats, u_mem.n_rbeats);
   endtask
 

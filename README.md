@@ -24,7 +24,9 @@ reproduce with open-source tools.
 - **Reproducible verification.** Pure-integer Python reference, self-checking SystemVerilog testbenches,
   Verilator lint and simulation in GitHub Actions, and a whole LeNet-5 that matches the model bit for bit.
   SystemVerilog assertions are bound to the RTL in every testbench, and CI fails if one of their cover
-  properties is never reached ([docs/verification.md](docs/verification.md)).
+  properties is never reached. A pyuvm environment (agent, scoreboard with a register-level reference model,
+  functional coverage closed in CI) drives `npu_top` with random layers, programs, errors and DMA transfers
+  ([docs/verification.md](docs/verification.md)).
 
 ## Repository layout
 
@@ -41,6 +43,7 @@ reproduce with open-source tools.
 ├── tb/
 │   ├── common/              # SV reference functions, AXI4-Lite and APB master BFMs, AXI4 slave memory model
 │   ├── sva/                 # Assertion checkers bound to the RTL, cover-property report
+│   ├── cocotb/              # pyuvm environment for npu_top: agent, reference model, scoreboard, coverage
 │   ├── unit/                # One self-checking testbench per module
 │   └── integration/         # npu_top through AXI4-Lite, LeNet-5 networks, chip_top with two clocks
 ├── model/                   # Python integer golden model, vector generators, self-test
@@ -54,10 +57,11 @@ reproduce with open-source tools.
 
 ## Quick start
 
-Requirements: Verilator 5.x and Python 3 (no other dependencies for simulation).
+Requirements: Verilator 5.x and Python 3; the pyuvm environment also needs
+`pip install -r tb/cocotb/requirements.txt` (cocotb, pyuvm, cocotb-coverage).
 
 ```sh
-make ci                 # lint + Python self-test + unit testbenches + layer cases + both networks + cover closure
+make ci                 # lint + Python self-test + unit testbenches + both networks + pyuvm env + cover closure
 ```
 
 ```sh

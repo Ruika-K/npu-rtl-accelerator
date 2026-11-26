@@ -7,11 +7,16 @@ assertion fails first and whether the testbench's own checks notice. This is
 the evidence that the assertions can fire and what they add; it takes about
 50 minutes and is not part of make ci.
 
-Usage: mutation_run.py [substring of a mutation name]
+With --cocotb it also runs the cocotb / pyuvm environment on every mutation
+with the assertions compiled out, so only its scoreboard can notice (about
+another 30 minutes; cocotb must be installed, tb/cocotb/requirements.txt).
+
+Usage: mutation_run.py [--cocotb] [substring of a mutation name]
 The RTL tree must be clean (git); every file is restored after its run.
 """
 import os
 import re
+import signal
 import subprocess
 import sys
 
@@ -37,6 +42,7 @@ M = [
  ("sequencer layer count restarts at 1", "rtl/ctrl/npu_sequencer.sv", "cur_cycles_q <= cur_adv_c ? '0 : cur_cycles_q + 32'd1;", "cur_cycles_q <= cur_adv_c ? 32'd1 : cur_cycles_q + 32'd1;", "unit-npu_sequencer"),
  ("sequencer ends a run without done", "rtl/ctrl/npu_sequencer.sv", "            busy_q  <= 1'b0;\n            done_o  <= 1'b1;", "            busy_q  <= 1'b0;\n            done_o  <= 1'b0;", "unit-npu_sequencer"),
  ("top grants pixels during a DMA", "rtl/npu_top.sv", "assign pix_wr_ready_o = !busy && !dma_busy &&", "assign pix_wr_ready_o = !busy &&", "integ-layers"),
+ ("regs STATUS read without this cycle's done", "rtl/host/npu_regs.sv", "err_q | err_i, done_q | done_i, busy_i};", "err_q, done_q, busy_i};", "unit-npu_regs"),
  ("pix_writer writes without the grant", "rtl/chip/pix_writer.sv", "assign wr_en_o   = (state_q == S_FLUSH) && wr_ready_i;", "assign wr_en_o   = (state_q == S_FLUSH);", "unit-pix_writer"),
 ]
 
@@ -46,19 +52,42 @@ EXTRA = {
 }
 
 
-def run(target, with_assertions):
-    cmd = ["make", target] + ([] if with_assertions else ["VERILATOR_ASSERT="])
+def make(args, timeout=1800):
+    """(output, exit code) of make; on a timeout the whole process group (simulator included) is killed."""
+    p = subprocess.Popen(["make"] + args, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         start_new_session=True)
     try:
-        p = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=1800)
-        return p.stdout + p.stderr
+        out, _ = p.communicate(timeout=timeout)
+        return out, p.returncode
     except subprocess.TimeoutExpired:
-        return "TIMEOUT"
+        os.killpg(p.pid, signal.SIGKILL)
+        p.communicate()
+        return "TIMEOUT", None
+
+
+def run(target, with_assertions):
+    return make([target] + ([] if with_assertions else ["VERILATOR_ASSERT="]))[0]
+
+
+def run_cocotb():
+    log, code = make(["cocotb", "COCOTB_ASSERT="])
+    if log == "TIMEOUT":
+        return "times out"
+    errs = sum(int(n) for n in re.findall(r"scoreboard: .*?, (\d+) errors", log))
+    if errs:
+        return "fails (%d scoreboard errors)" % errs
+    if "SimTimeoutError" in log:
+        return "fails (test timeout)"
+    return "passes" if code == 0 else "fails"
 
 
 def main():
     if subprocess.run(["git", "status", "--porcelain", "rtl"], cwd=REPO, capture_output=True, text=True).stdout.strip():
         sys.exit("mutation_run.py: rtl/ has uncommitted changes; refusing to mutate it")
-    pick = sys.argv[1] if len(sys.argv) > 1 else ""
+    args = sys.argv[1:]
+    with_cocotb = "--cocotb" in args
+    args = [a for a in args if a != "--cocotb"]
+    pick = args[0] if args else ""
     rows = []
     for name, path, old, new, target in M:
         if pick not in name:
@@ -68,7 +97,7 @@ def main():
         text = orig
         edits = [(old, new)] + ([EXTRA[name]] if name in EXTRA else [])
         if any(text.count(a) != 1 for a, _ in edits):
-            rows.append((name, target, "SETUP ERROR: pattern not found exactly once", "-"))
+            rows.append((name, target, "SETUP ERROR: pattern not found exactly once", "-", "-"))
             continue
         for a, b in edits:
             text = text.replace(a, b)
@@ -76,18 +105,22 @@ def main():
             open(full, "w").write(text)
             log_on = run(target, True)
             log_off = run(target, False)
+            env = run_cocotb() if with_cocotb else "-"
         finally:
             open(full, "w").write(orig)
-        m = re.search(r"Assertion failed in (\S+): (.*)", log_on)
+        # only the checkers of tb/sva count; a testbench's own final $fatal is reported the same way
+        m = re.search(r"Assertion failed in (\S*\.u_sva\.\S+): (.*)", log_on)
         fired = "%s (%s)" % (m.group(1).split(".")[-1], m.group(2).strip()) if m else "none"
         tb = "passes" if re.search(r"^PASS", log_off, re.M) else ("times out" if log_off == "TIMEOUT" else "fails")
-        rows.append((name, target, fired, tb))
-        print("%-42s | %-18s | %s | testbench alone: %s" % rows[-1], flush=True)
+        rows.append((name, target, fired, tb, env))
+        print("%-42s | %-18s | %s | testbench alone: %s | cocotb scoreboard alone: %s" % rows[-1], flush=True)
     caught = sum(1 for r in rows if r[2] != "none" and not r[2].startswith("SETUP"))
     only = sum(1 for r in rows if r[2] != "none" and r[3] == "passes")
     print()
     print("%d mutations, an assertion fails in %d, the testbench alone catches %d, %d seen only by assertions"
           % (len(rows), caught, sum(1 for r in rows if r[3] != "passes" and r[3] != "-"), only))
+    if with_cocotb:
+        print("the cocotb scoreboard alone catches %d" % sum(1 for r in rows if r[4].startswith("fails")))
 
 
 if __name__ == "__main__":

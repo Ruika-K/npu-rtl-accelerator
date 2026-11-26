@@ -29,6 +29,18 @@ jobs:
       - name: Top-level integration test
         run: make integ
 
+      - name: cocotb / pyuvm environment
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet -r tb/cocotb/requirements.txt
+          PATH="$PWD/.venv/bin:$PATH" make cocotb
+          {
+            echo '## cocotb / pyuvm environment'
+            echo '```'
+            grep -E 'scoreboard: |functional coverage|TESTS=' build/logs/cocotb.log | sed 's/.*\]: //;s/^ *//'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Cover-property closure
         run: |
           make cover

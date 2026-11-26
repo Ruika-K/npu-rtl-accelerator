@@ -1,0 +1,4 @@
+# Python packages of the cocotb / pyuvm environment (make cocotb); versions as tested in CI
+cocotb==1.9.2
+pyuvm==5.0.0
+cocotb-coverage==1.2.0

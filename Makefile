@@ -7,8 +7,9 @@
 #   make unit-pe     One unit testbench (unit-<module>)
 #   make integ       Layer cases, the LeNet-5 networks (AXI4-Lite) and chip_top (APB + pixel stream)
 #   make integ-mnist One network (integ-<net>, IMAGES=<n> to limit the images)
+#   make cocotb      pyuvm environment for npu_top (tb/cocotb, needs tb/cocotb/requirements.txt)
 #   make cover       Cover properties of tb/sva merged over all runs; fails if one was never reached
-#   make ci          lint + model-test + unit + integ + cover (what GitHub Actions runs)
+#   make ci          lint + model-test + unit + integ + cocotb + cover (what GitHub Actions runs)
 #   make synth       sv2v + Yosys (xc7 resources) and nextpnr-ecp5 (Fmax), see synth/README.md
 #
 #   make compile / make run      VCS flow for TOP and FILELIST (commercial simulator)
@@ -62,10 +63,10 @@ VCS_FLAGS ?= -full64 -sverilog -timescale=1ns/1ps -debug_access+all
 
 # lint-%, unit-% and vcs-unit-% are pattern rules; GNU make skips pattern
 # search for .PHONY targets, so they are deliberately not listed here.
-.PHONY: help lint lint-synth-wrapper lint-sva model-test vectors unit integ integ-layers integ-chip cover ci synth synth-xilinx synth-ecp5 compile run clean
+.PHONY: help lint lint-synth-wrapper lint-sva model-test vectors unit integ integ-layers integ-chip cocotb cover ci synth synth-xilinx synth-ecp5 compile run clean
 
 help:
-	@sed -n '2,17p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '2,18p' Makefile | sed 's/^# \{0,1\}//'
 
 # ---------------------------------------------------------------------------
 # Lint
@@ -158,13 +159,25 @@ vcs-integ-%:
 	$(MAKE) compile TOP=npu_lenet_tb FILELIST=sim/filelists/integ_npu_lenet.f
 	$(BUILD_DIR)/vcs/npu_lenet_tb/simv +program=$(abspath model/data/$*/program.txt) +images=$(IMAGES)
 
+# cocotb + pyuvm environment for npu_top: random layers and programs, errors and
+# DMA, checked by a register-level reference model, with functional-coverage
+# closure as its last test. The SVA checkers run in it too; its cover database
+# joins the others for make cover.
+COCOTB_ASSERT ?= --assert
+cocotb:
+	mkdir -p $(COV_DIR) $(BUILD_DIR)/cocotb $(BUILD_DIR)/logs
+	rm -f $(BUILD_DIR)/cocotb/results.xml tb/cocotb/coverage.dat
+	$(MAKE) -C tb/cocotb COCOTB_ASSERT="$(COCOTB_ASSERT)" 2>&1 | tee $(BUILD_DIR)/logs/cocotb.log
+	@if [ -f tb/cocotb/coverage.dat ]; then mv tb/cocotb/coverage.dat $(COV_DIR)/cocotb.dat; fi
+	python3 tb/cocotb/check_results.py $(BUILD_DIR)/cocotb/results.xml
+
 # Cover-property closure: every cover property of tb/sva must have been reached
 # by at least one of the runs above (their databases are in $(COV_DIR)), or be
 # waived with a reason in tb/sva/cover_waivers.txt.
 cover:
 	python3 tb/sva/cover_report.py $(COV_DIR)/*.dat --waivers tb/sva/cover_waivers.txt
 
-ci: lint model-test unit integ cover
+ci: lint model-test unit integ cocotb cover
 
 # ---------------------------------------------------------------------------
 # Synthesis (open source: sv2v + yosys, nextpnr-ecp5 for timing), see synth/README.md

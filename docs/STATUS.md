@@ -6,11 +6,11 @@ Shared handoff between work sessions. Update it after every meaningful change; p
 
 M1 to M6 are merged, both networks (MNIST and CIFAR-10) run bit-exact in `make ci`, and six rounds of timing
 closure on the open ECP5 flow raised the worst of three placement seeds from 40.4 to 58.8 MHz
-(`docs/synthesis.md`). The current work is M7, verification hardening. Its first step (branch
-`feat/verif-sva-cocotb`) binds SVA checkers to the RTL in every testbench and makes cover-property closure a CI
-gate (ADR-019): 76 cover properties, all reached after seven tests were added for the scenarios the first report
-showed as never exercised. Next in M7: a cocotb / pyuvm environment with functional coverage, then a
-SystemVerilog UVM environment for the commercial simulator. M8 is the RTL-to-GDS flow.
+(`docs/synthesis.md`). The current work is M7, verification hardening. Step 1 (merged) bound SVA checkers to the
+RTL with cover-property closure in CI (ADR-019). Step 2 (branch `feat/cocotb-pyuvm`) adds a pyuvm environment for
+`npu_top` with a register-level reference model and functional-coverage closure (ADR-020); it found and fixed a
+one-cycle gap in which STATUS showed neither BUSY nor DONE. Next in M7: a SystemVerilog UVM environment for the
+commercial simulator. M8 is the RTL-to-GDS flow.
 
 ## Completed
 
@@ -113,6 +113,13 @@ SystemVerilog UVM environment for the commercial simulator. M8 is the RTL-to-GDS
   - Tests added for unreached scenarios: B / R back-pressure (`axil_slave_tb` phase 4), DMA bursts cut by a
     4 KB boundary and single-beat bursts in both directions (`npu_top_tb`), a NUM_DESC-layer program
     (`npu_sequencer_tb`).
+- M7, step 2 (2026-11-26):
+  - `tb/cocotb/`: pyuvm environment for `npu_top`: AXI4-Lite agent, AXI4 slave memory for the DMA, a
+    register-level reference model driven by the monitor (golden model on shadow buffers), scoreboard, coverage
+    model (104 bins, cocotb-coverage), four tests and a closure test; `make cocotb` in `make ci` and CI.
+  - RTL fix: STATUS / DMA_STATUS include the done / err pulse of the read cycle; `npu_top_sva` checks status
+    coherence, `npu_regs_tb` sweeps the end of a run over a STATUS read.
+  - `tb/sva/mutation_run.py --cocotb`: the three detectors compared on 20 injected defects.
 
 ## Milestone plan
 
@@ -124,7 +131,7 @@ SystemVerilog UVM environment for the commercial simulator. M8 is the RTL-to-GDS
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | Done |
 | M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | Done |
-| M7 | Verification hardening: SVA checkers and cover closure, cocotb / pyuvm environment with functional coverage, SystemVerilog UVM environment | Step 1 of 3 done |
+| M7 | Verification hardening: SVA checkers and cover closure, cocotb / pyuvm environment with functional coverage, SystemVerilog UVM environment | Steps 1 and 2 of 3 done |
 | M8 | RTL to GDS on SKY130 with the open flow (ASIC memory configuration, SRAM macros, DRC / LVS, frequency / area / power) | Planned |
 
 ## Verification evidence
@@ -187,6 +194,10 @@ SystemVerilog UVM environment for the commercial simulator. M8 is the RTL-to-GDS
 | 2026-11-11 | Verilator 5.020 | `make cover`, first report | 69 of 77 cover properties reached; unreached: B and R waiting for the master, DMA single-beat and 4 KB-split bursts (read and write), a 16-layer program, a blocked pixel write |
 | 2026-11-11 | Verilator 5.020 | `make cover` after the added tests | 76 of 76 reached, no waivers; the new DMA transfers across 4 KB boundaries move the data correctly |
 | 2026-11-11 | Verilator 5.020 | Mutation run for the assertions: 19 RTL defects, one at a time, each run with and without `--assert` | An assertion fails in all 19 (AXI hold rules, joint AW/W accept, response data, 4 KB crossing, WLAST, AWLEN, Gray code, FIFO read hold, latencies, output range, drain start, shared weight port, memory access while idle, counter sum, busy without done, pixel grant, write without grant, beat outside a tile). Without assertions the testbenches catch 16; three are seen only by assertions (an extra beat in a padded tile, the pixel grant during a DMA, a pixel write without the grant), all interface-contract violations that the current environment masks |
+| 2026-11-26 | Verilator 5.020, cocotb 1.9.2, pyuvm 5.0.0, cocotb-coverage 1.2.0 | `make cocotb` | 4 tests and closure pass: 21090 scoreboard checks, 94 runs, 233 DMA transfers, 0 errors; functional coverage 104 of 104 bins; 30 s |
+| 2026-11-26 | Verilator 5.020, cocotb | First runs of the pyuvm environment | Scoreboard: STATUS (and DMA_STATUS) read as all clear right after a run; traced to busy falling one edge before DONE is registered. With the fix reverted, `npu_top_sva.a_status_coherent` fires in the pyuvm run and the new `npu_regs_tb` sweep fails |
+| 2026-11-26 | Verilator 5.020 | `make clean && make ci` with the pyuvm environment | All SystemVerilog testbenches, both networks and the pyuvm tests pass; cover properties 78 of 78 over 17 runs; 190 s |
+| 2026-11-26 | Verilator 5.020, cocotb | `mutation_run.py --cocotb`, 20 defects | SVA checkers 19, SystemVerilog testbenches alone 17, pyuvm scoreboard alone 14; every defect caught by at least one (details in `docs/verification.md` 2.3) |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `main` (`5cc8e3d`) | 56.2 / 45.9 / 40.4 MHz, three different critical paths |
 | 2026-11-04 | Verilator 5.020 | Registered pool write port, channel mask in the tile queue, two-stage requant multiply: unit testbenches, `make clean && make ci` | PASS; mutations (early capture, off-by-one mask, signed low half) fail; cycle counts unchanged |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `cb95def` | 60.5 / 50.8 / 52.6 MHz, worst 50.8 (was 40.4); xc7 17886 LUT, 14012 FF; ECP5 24247 LUT4 cells (28%) |
@@ -201,14 +212,13 @@ SystemVerilog UVM environment for the commercial simulator. M8 is the RTL-to-GDS
 
 ## Next steps
 
-1. M7 step 2: a cocotb / pyuvm environment for `npu_top` (AXI4-Lite agent, sequences, a scoreboard that calls
-   `model/npu_ref.py` directly, functional coverage with cocotb-coverage), run in CI.
-2. M7 step 3: a SystemVerilog UVM environment for the commercial simulator, elaboration-checked in CI with an
-   open parser, simulated with VCS on the author's machine.
-3. Run the unit and integration testbenches with VCS and record the results in the table below (the filelists
-   now include `tb/sva`).
-4. M8: RTL to GDS on SKY130.
-5. Timing, if more is wanted: physical measures only (`docs/synthesis.md`).
+1. M7 step 3: a SystemVerilog UVM environment for the commercial simulator (agent, register model, scoreboard
+   calling the golden model through DPI or vector files, covergroups), simulated with VCS on the author's
+   machine; elaboration-checked in CI where an open tool allows.
+2. Run the unit and integration testbenches with VCS and record the results in the table below (the filelists
+   include `tb/sva`).
+3. M8: RTL to GDS on SKY130.
+4. Timing, if more is wanted: physical measures only (`docs/synthesis.md`).
 
 ## Known limitations
 
@@ -236,6 +246,7 @@ Full reasoning in `docs/decisions.md`; this is an index.
 | 2026-11-04 | Descriptor table in a 1R1W RAM with per-word valid bits (ADR-017) | Removes the critical register-read mux and 5K flip-flops, keeps reset value and latencies |
 | 2026-11-05 | Keep every requant unit's copy of the layer constants in ECP5 synthesis (ADR-018) | Merged copies drove eight units from one register; 896 flip-flops buy a local route |
 | 2026-11-11 | Assertions in bound checkers, cover-property closure as a CI gate (ADR-019) | RTL stays free of verification code; unreached scenarios become a measured, failing fact |
+| 2026-11-26 | A pyuvm environment with a register-level reference model driven by the monitor (ADR-020) | UVM structure in CI with the open simulator; checks bus behaviour against the spec, whatever the stimulus |
 
 ## VCS run log
 

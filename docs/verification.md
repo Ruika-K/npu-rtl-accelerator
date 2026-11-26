@@ -97,10 +97,70 @@ direction, a program using all 16 descriptors, and a blocked pixel write. Tests 
 (`axil_slave_tb` phase 4, the burst-shape transfers of the DMA phase, the NUM_DESC program in
 `npu_sequencer_tb`); the last became an environment assumption plus a cover in `pix_writer_sva`.
 
-**Do the assertions fire?** `tb/sva/mutation_run.py` injects one RTL defect at a time and runs the affected
-testbench with and without the assertions. In all 19 defects an assertion fails; the testbenches alone catch 16.
-The three that only an assertion sees are interface-contract violations that the surrounding logic happens to
-mask today: an extra beat in a padded tile, the pixel grant during a DMA, a pixel write without the grant.
+**Do the checks fire?** `tb/sva/mutation_run.py --cocotb` injects one RTL defect at a time and runs three
+detectors on it: the affected SystemVerilog testbench with the assertions, the same testbench without them, and
+the pyuvm environment of section 2.4 without them (its scoreboard only). Of 20 defects:
+
+| Detector | Caught | Missed |
+| --- | ---: | --- |
+| SVA checkers (in the SystemVerilog regression) | 19 | the STATUS gap of section 2.4 (its property is bound at `npu_top`; the unit testbench catches it, and the assertion fires in the pyuvm run) |
+| SystemVerilog testbench checks alone | 17 | an extra beat in a padded tile, the pixel grant during a DMA, a pixel write without the grant |
+| pyuvm scoreboard alone | 14 | both FIFO defects and the pixel writer (outside `npu_top`), the per-layer cycle counter (not predicted), the extra beat in a padded tile, the pixel grant during a DMA |
+
+Every defect is caught by at least one detector, and the three layers miss different things: the assertions see
+interface-contract violations that do not change any result today; the scoreboard checks the bus behaviour a
+host sees, independent of how the tests were written; the procedural testbenches check exact internal timing
+that neither of the others predicts. Four of the scoreboard's catches are test timeouts (the DUT stops
+answering), which is what the per-test simulated-time limit is for.
+
+### 2.4 cocotb / pyuvm environment for `npu_top` (`tb/cocotb/`, `make cocotb`)
+
+A class-based environment in the UVM structure, written with pyuvm on cocotb so that it runs with the open
+simulator in CI. The DUT is `npu_top` with the SVA checkers of section 2.3 bound in.
+
+| Component | File | Role |
+| --- | --- | --- |
+| AXI4-Lite agent | `npu_env/axil.py` | Sequencer, driver (AW / W together, AW first or W first; random BREADY / RREADY delay), passive monitor that rebuilds every transaction from the pins and publishes it on an analysis port |
+| AXI4 slave memory | `npu_env/axi_mem.py` | Answers the DMA master: random stalls on all five channels, one burst at a time, a sparse memory whose unwritten bytes read as a function of their address |
+| Reference model | `npu_env/ref_model.py` | Register-level model of `npu_top` driven only by monitored traffic (below) |
+| Scoreboard | `npu_env/scoreboard.py` | Compares every read response, every write response and every DMA store with the model; prints the recent transactions with the first mismatch |
+| Coverage model | `npu_env/coverage.py` | cocotb-coverage points and crosses, sampled from what the model predicts and the monitor observes |
+| Sequences | `npu_env/sequences.py` | Host procedures of `programming_model.md` (load a buffer over AXI4-Lite or by DMA, write a program, START, poll, read results), composed into the test sequences |
+| Stimulus | `npu_env/layers.py` | Random layers and chained programs the golden model accepts, plus directed corner layers |
+
+**Reference model.** It keeps shadows of the registers, the descriptor table and both buffers, updated from every
+completed write the monitor reports. An accepted START runs the whole program on the shadows with
+`model/npu_ref.py` (`desc_check` first, so an invalid layer stops the run with its error code and layer index); an
+accepted DMA start moves the bytes between the shadows and the memory model, or predicts the parameter error.
+Completion is not visible on the bus, so after a start the model is "maybe busy": a memory access may then be
+rejected (SLVERR, which sets HOST_CONFLICT in the model too) or succeed, and a STATUS read with BUSY clear, or a
+successful memory access, resolves it. Performance counters are not predicted (their consistency is an SVA
+property).
+
+**Tests** (`test_npu.py`, one environment per test, each reset):
+
+- `RandomLayerTest`: 20 directed corner layers (every kernel size, every padding, K_total exactly 8, full and
+  partial output tiles, odd pool sizes, 1, 9 and 16 logits) and 40 random single layers; inputs loaded over
+  AXI4-Lite or by DMA, outputs read back over AXI4-Lite or stored by DMA, at random.
+- `ProgramTest`: chained programs of 3, 5, 8, 12 and 16 descriptors (conv, pool, FC, ARGMAX, NOP), the data
+  ping-ponging between two act_buffer regions.
+- `ErrorTest`: an invalid field in a random layer of a random program (every error code), layer counts 0, 17
+  and 31, misaligned and unmapped accesses, and memory accesses rejected during a run.
+- `DmaTest`: loads and stores of 8 to 2048 bytes to both buffers, half of them starting just below a 4 KB
+  boundary, and the rejected parameter cases.
+- `coverage_closure`: fails unless every bin of the coverage model was hit; the database is written to
+  `build/cocotb/functional_coverage.yml`.
+
+**Functional coverage** (104 bins): opcode x outcome, error code and position, program length; kernel size,
+padding, K_total below / at / above N, partial output tiles, more than one n_tile, ReLU, shift range and input
+zero point of CONV2D / FC; odd pool sizes; ARGMAX lengths; DMA direction x buffer, length, 4 KB crossing,
+rejected parameters; AXI4-Lite write order, response wait, window x kind x response, misaligned accesses.
+
+**What it found.** The host sequences poll STATUS until BUSY clears, as a driver would, while the SystemVerilog
+testbenches poll DONE. The scoreboard reported STATUS reads with BUSY, DONE and ERR all clear right after a run:
+the engines drop busy in the cycle they pulse done and the register file set DONE an edge later, so a read
+answered in that cycle missed both. The same gap existed for DMA_STATUS. The register file now includes the
+pulse in the read; `npu_top_sva` checks the property and `npu_regs_tb` has a directed test for it.
 
 ## 3. Tools and how to run
 
@@ -109,12 +169,13 @@ mask today: an extra beat in a padded tile, the pixel grant during a DMA, a pixe
 | Verilator 5 (`--timing`) | Lint, unit and integration simulation | Local, GitHub Actions |
 | VCS | Additional run of the same filelists, recorded in `docs/STATUS.md` | Separate machine available to the author |
 | Python 3 + numpy | Golden model, vector generation | Local, GitHub Actions |
+| cocotb 1.9, pyuvm, cocotb-coverage | Class-based environment for `npu_top` with functional coverage (section 2.4) | Local, GitHub Actions |
 | PyTorch | Training only, not in CI | Local, optional |
 
 Constraints:
 
 - Testbenches use the SystemVerilog subset Verilator supports: procedural testbenches, queues, `$readmemh`,
-  `$fopen` / `$fscanf`; no classes and no UVM.
+  `$fopen` / `$fscanf`; no classes and no UVM. The class-based environment is the pyuvm one of section 2.4.
 - Shared reference functions live in `tb/common/npu_tb_pkg.sv` and correspond one to one with `model/npu_ref.py`.
 - Stimulus is driven on the falling clock edge with blocking assignments, and checks happen on the falling edge too.
   The DUT then samples identical values under Verilator and VCS, avoiding the semantic difference of non-blocking
@@ -122,8 +183,8 @@ Constraints:
 - Every testbench ends with a `PASS:` or `FAIL:` line and exits via `$finish` / `$fatal`; the Makefile judges by the `PASS` line in the log.
 - Each unit testbench has its own filelist `sim/filelists/unit_<module>.f`, shared by Verilator and VCS;
   `make unit-<module>` runs Verilator, `make vcs-unit-<module>` runs VCS.
-- `make lint`, `make model-test`, `make unit`, `make integ` and `make cover` make up `make ci`, which GitHub
-  Actions runs in full.
+- `make lint`, `make model-test`, `make unit`, `make integ`, `make cocotb` and `make cover` make up `make ci`,
+  which GitHub Actions runs in full. `make cocotb` needs the Python packages of `tb/cocotb/requirements.txt`.
 - RTL lint is `-Wall` with warnings fatal; testbench builds tolerate warnings, but known checker-style warnings are
   annotated with a local `lint_off` and a reason.
 - Coverage: functional scenarios are cover properties in `tb/sva` with a closure check (section 2.3); code

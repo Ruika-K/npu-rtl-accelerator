@@ -261,3 +261,24 @@ This is the most important architectural decision in v1.
   code coverage as the metric (says what was executed, not which scenario was checked).
 - Cost: about 6% more regression time (120 s against 113 s for `make ci` from clean); one shared `main()` for all Verilator testbenches so that the coverage
   database is written; the properties avoid `##` and property operators, which makes a few of them longer.
+
+## ADR-020 A pyuvm environment with a register-level reference model
+
+- Context: the SystemVerilog testbenches are procedural and directed-random; the verification plan had no
+  class-based environment, and the CI simulator cannot run SystemVerilog UVM.
+- Choice: a pyuvm environment on cocotb for `npu_top` (agent, monitor, scoreboard, sequences, functional
+  coverage with cocotb-coverage), in CI. Its reference model works at the register level and is driven only by
+  what the monitor observes: shadows of the registers, the descriptor table and both buffers, with
+  `model/npu_ref.py` executing each accepted START on them. A SystemVerilog UVM environment for the commercial
+  simulator follows as a separate step.
+- Why: pyuvm gives the UVM structure (phases, factory-free components, TLM analysis ports, `ConfigDB`,
+  sequences on a sequencer) with an open simulator, so it runs on every push. A model driven by the monitor
+  rather than by the sequences checks the DUT against the specification of its bus interface, whatever
+  stimulus produced the traffic, and the golden model is called directly instead of through vector files.
+  Sequences written the way a host driver works found a real bug the procedural testbenches had not: a STATUS
+  read in the cycle a run ended showed neither BUSY nor DONE.
+- Rejected: SystemVerilog UVM in CI (the open simulator cannot run it); a transaction-level model that knows
+  each sequence's intent (it would check the sequences, not the bus behaviour); predicting cycle counts in the
+  model (the performance counters are checked by SVA instead).
+- Cost: about 30 s of CI time, three pinned Python packages, and an ambiguity the model must resolve: completion is
+  not visible on the bus, so it tracks "maybe busy" until a STATUS read or a successful memory access settles it.

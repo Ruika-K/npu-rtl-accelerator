@@ -229,7 +229,11 @@ module npu_regs
     case (a)
       REG_ID:              return NPU_ID;
       REG_CTRL:            return {30'h0, irq_en_q, 1'b0};
-      REG_STATUS:          return {8'h0, err_code_q, 4'h0, cur_layer_i, 4'h0, host_conflict_q, err_q, done_q, busy_i};
+      // DONE / ERR include this cycle's pulse: the engine drops busy in the
+      // cycle it reports done, and done_q is set one edge later, so without
+      // it a read in that cycle shows BUSY, DONE and ERR all clear.
+      REG_STATUS:          return {8'h0, err_i ? err_code_i : err_code_q, 4'h0, cur_layer_i, 4'h0, host_conflict_q,
+                                   err_q | err_i, done_q | done_i, busy_i};
       REG_LAYER_CNT:       return {27'h0, layer_cnt_q};
       REG_RESULT:          return {23'h0, result_valid_q, 4'h0, result_idx_q};
       REG_PERF_TOTAL:      return total_cycles_i;
@@ -238,7 +242,8 @@ module npu_regs
       REG_DMA_SRC:         return dma_src_o;
       REG_DMA_DST:         return {12'h0, dma_dst_o};
       REG_DMA_LEN:         return {12'h0, dma_len_o};
-      REG_DMA_STATUS:      return {16'h0, dma_err_code_q, 5'h0, dma_err_q, dma_done_q, dma_busy_i};
+      REG_DMA_STATUS:      return {16'h0, dma_err_i ? dma_err_code_i : dma_err_code_q, 5'h0, dma_err_q | dma_err_i,
+                                   dma_done_q | dma_done_i, dma_busy_i};
       default:             return 32'h0;
     endcase
   endfunction

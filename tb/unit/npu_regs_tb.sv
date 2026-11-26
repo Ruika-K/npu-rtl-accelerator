@@ -304,6 +304,29 @@ module npu_regs_tb
     rd_expect(A_STATUS, 32'h0000_0500, 2'b00, "START clears DONE / ERR / ERR_CODE");
     cur_layer_i = 4'd0;
 
+    // ---- STATUS in the cycle a run ends ----
+    // The sequencer drops busy in the cycle it pulses done, and DONE is
+    // registered an edge later. A STATUS read answered in that cycle must
+    // still show the run as busy or done (the cocotb environment found it
+    // returning BUSY, DONE and ERR all clear). The end of the run is swept
+    // over the read so that one offset lands on that cycle.
+    for (int d = 0; d < 12; d++) begin
+      logic [1:0] resp; logic [31:0] data;
+      busy_i = 1'b1;
+      fork
+        u_bfm.read({12'h0, A_STATUS}, data, resp);
+        begin
+          repeat (d) @(negedge clk_i);
+          busy_i = 1'b0; done_i = 1'b1;
+          @(negedge clk_i);
+          done_i = 1'b0;
+        end
+      join
+      check(resp == 2'b00 && data[2:0] != 3'b000,
+            $sformatf("STATUS read %0d cycles into the end of a run shows BUSY, DONE and ERR clear (%h)", d, data));
+      wr(A_STATUS, 32'h2);
+    end
+
     // ---- RESULT / LOGITS ----
     @(negedge clk_i);
     argmax_valid_i = 1'b1; argmax_idx_i = 4'd7;

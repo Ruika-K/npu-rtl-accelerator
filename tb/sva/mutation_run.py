@@ -11,7 +11,12 @@ With --cocotb it also runs the cocotb / pyuvm environment on every mutation
 with the assertions compiled out, so only its scoreboard can notice (about
 another 30 minutes; cocotb must be installed, tb/cocotb/requirements.txt).
 
-Usage: mutation_run.py [--cocotb] [substring of a mutation name]
+With --uvm it runs the SystemVerilog UVM environment (make uvm, npu_full_test)
+with the assertions compiled out, so only its scoreboard, register model and
+sequence checks can notice (about 4 minutes per mutation; needs Verilator
+5.052 or later as VERILATOR_UVM). --uvm-only skips the SVA / testbench runs.
+
+Usage: mutation_run.py [--cocotb] [--uvm | --uvm-only] [substring of a mutation name]
 The RTL tree must be clean (git); every file is restored after its run.
 """
 import os
@@ -81,12 +86,32 @@ def run_cocotb():
     return "passes" if code == 0 else "fails"
 
 
+def run_uvm():
+    # Verilator turns assertions on by default since 5.04x, so they are switched off explicitly.
+    log, code = make(["uvm", "UVM_ASSERT=--no-assert", "UVM_TESTS=npu_full_test"], timeout=2400)
+    if log == "TIMEOUT":
+        return "times out"
+    if "uvm_build.log" in log and "PASS" not in log and "FAIL" not in log:
+        return "BUILD ERROR"
+    try:
+        sim = open(os.path.join(REPO, "build", "logs", "uvm_npu_full_test.log")).read()
+    except OSError:
+        return "fails (no log)"
+    errs = sum(int(n) for n in re.findall(r"^UVM_(?:ERROR|FATAL) :\s*(\d+)", sim, re.M))
+    ids = sorted(set(re.findall(r"^UVM_(?:ERROR|FATAL) \S+ @ \d+: \S+ \[([^\]]+)\]", sim, re.M)))
+    if errs:
+        return "fails (%d UVM errors: %s)" % (errs, ", ".join(ids[:3]))
+    return "passes" if code == 0 else "fails"
+
+
 def main():
     if subprocess.run(["git", "status", "--porcelain", "rtl"], cwd=REPO, capture_output=True, text=True).stdout.strip():
         sys.exit("mutation_run.py: rtl/ has uncommitted changes; refusing to mutate it")
     args = sys.argv[1:]
     with_cocotb = "--cocotb" in args
-    args = [a for a in args if a != "--cocotb"]
+    uvm_only = "--uvm-only" in args
+    with_uvm = uvm_only or "--uvm" in args
+    args = [a for a in args if a not in ("--cocotb", "--uvm", "--uvm-only")]
     pick = args[0] if args else ""
     rows = []
     for name, path, old, new, target in M:
@@ -97,30 +122,37 @@ def main():
         text = orig
         edits = [(old, new)] + ([EXTRA[name]] if name in EXTRA else [])
         if any(text.count(a) != 1 for a, _ in edits):
-            rows.append((name, target, "SETUP ERROR: pattern not found exactly once", "-", "-"))
+            rows.append((name, target, "SETUP ERROR: pattern not found exactly once", "-", "-", "-"))
             continue
         for a, b in edits:
             text = text.replace(a, b)
         try:
             open(full, "w").write(text)
-            log_on = run(target, True)
-            log_off = run(target, False)
+            log_on = "" if uvm_only else run(target, True)
+            log_off = "" if uvm_only else run(target, False)
             env = run_cocotb() if with_cocotb else "-"
+            uvm = run_uvm() if with_uvm else "-"
         finally:
             open(full, "w").write(orig)
         # only the checkers of tb/sva count; a testbench's own final $fatal is reported the same way
         m = re.search(r"Assertion failed in (\S*\.u_sva\.\S+): (.*)", log_on)
         fired = "%s (%s)" % (m.group(1).split(".")[-1], m.group(2).strip()) if m else "none"
         tb = "passes" if re.search(r"^PASS", log_off, re.M) else ("times out" if log_off == "TIMEOUT" else "fails")
-        rows.append((name, target, fired, tb, env))
-        print("%-42s | %-18s | %s | testbench alone: %s | cocotb scoreboard alone: %s" % rows[-1], flush=True)
-    caught = sum(1 for r in rows if r[2] != "none" and not r[2].startswith("SETUP"))
-    only = sum(1 for r in rows if r[2] != "none" and r[3] == "passes")
+        if uvm_only:
+            fired, tb = "-", "-"
+        rows.append((name, target, fired, tb, env, uvm))
+        print("%-42s | %-18s | %s | testbench alone: %s | cocotb scoreboard alone: %s | UVM env alone: %s" % rows[-1],
+              flush=True)
+    caught = sum(1 for r in rows if r[2] not in ("none", "-") and not r[2].startswith("SETUP"))
+    only = sum(1 for r in rows if r[2] not in ("none", "-") and r[3] == "passes")
     print()
     print("%d mutations, an assertion fails in %d, the testbench alone catches %d, %d seen only by assertions"
           % (len(rows), caught, sum(1 for r in rows if r[3] != "passes" and r[3] != "-"), only))
     if with_cocotb:
         print("the cocotb scoreboard alone catches %d" % sum(1 for r in rows if r[4].startswith("fails")))
+    if with_uvm:
+        print("the SystemVerilog UVM environment alone catches %d"
+              % sum(1 for r in rows if r[5].startswith("fails") or r[5] == "times out"))
 
 
 if __name__ == "__main__":

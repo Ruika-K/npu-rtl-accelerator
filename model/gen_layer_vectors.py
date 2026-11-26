@@ -105,6 +105,14 @@ def main():
             ]:
                 d, s = conv_case(rng, OP_CONV2D, in_h, in_w, c_in, c_out, k, pad, rng.randint(0, 1), False)
                 emit(f, d, s); n_cases += 1
+            # Directed: every kernel size with every padding class (0..3 and one above 3).
+            for k in range(1, 8):
+                for pad in (0, 1, 2, 3, rng.randint(4, 7)):
+                    in_h = rng.randint(max(1, k - 2 * pad), 9)
+                    in_w = rng.randint(max(1, k - 2 * pad), 9)
+                    d, s = conv_case(rng, OP_CONV2D, in_h, in_w, rng.randint(1, 3), rng.randint(1, 10), k, pad,
+                                     rng.randint(0, 1), False)
+                    emit(f, d, s); n_cases += 1
             for (c_in, c_out) in [(1, 1), (8, 8), (400, 120), (120, 84), (84, 10), (17, 3)]:
                 d, s = conv_case(rng, OP_FC, 1, 1, c_in, c_out, 1, 0, rng.randint(0, 1), False)
                 emit(f, d, s); n_cases += 1

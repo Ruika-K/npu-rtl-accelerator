@@ -41,6 +41,19 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: SystemVerilog UVM environment (slang elaboration)
+        run: |
+          set -o pipefail
+          .venv/bin/pip install --quiet -r tb/uvm/requirements.txt
+          PATH="$PWD/.venv/bin:$PATH" make uvm-elab | tee build/logs/uvm_elab.log
+          {
+            echo '## SystemVerilog UVM environment'
+            echo '```'
+            tail -1 build/logs/uvm_elab.log
+            echo '```'
+            echo 'Compiled and elaborated against Accellera UVM 2020.3.1; the tests run in the uvm job.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Cover-property closure
         run: |
           make cover
@@ -54,5 +67,64 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sim-logs
+          path: build/logs/
+          if-no-files-found: ignore
+
+  # SystemVerilog UVM tests on Verilator 5.052 or later, the first releases that
+  # run UVM. Ubuntu packages an older one, so a pinned release is built from
+  # source once and kept in the Actions cache.
+  uvm:
+    runs-on: ubuntu-24.04
+    env:
+      VERILATOR_VERSION: v5.054
+      VERILATOR_PREFIX: /home/runner/verilator-uvm
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore Verilator ${{ env.VERILATOR_VERSION }}
+        id: cache-verilator
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VERILATOR_PREFIX }}
+          key: verilator-${{ env.VERILATOR_VERSION }}-ubuntu-24.04
+
+      - name: Build Verilator ${{ env.VERILATOR_VERSION }}
+        if: steps.cache-verilator.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes git autoconf flex bison libfl-dev help2man g++ make perl python3
+          git clone --quiet --depth 1 --branch "$VERILATOR_VERSION" https://github.com/verilator/verilator.git "$RUNNER_TEMP/verilator"
+          cd "$RUNNER_TEMP/verilator"
+          autoconf
+          ./configure --prefix="$VERILATOR_PREFIX"
+          make -j "$(nproc)"
+          make install
+
+      # Saved right after the build, so a failing test run does not lose it.
+      - name: Save Verilator ${{ env.VERILATOR_VERSION }}
+        if: steps.cache-verilator.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VERILATOR_PREFIX }}
+          key: verilator-${{ env.VERILATOR_VERSION }}-ubuntu-24.04
+
+      - name: UVM tests
+        run: |
+          set -o pipefail
+          make uvm VERILATOR_UVM="$VERILATOR_PREFIX/bin/verilator" | tee build-uvm.log
+          {
+            echo '## SystemVerilog UVM tests (Verilator ${{ env.VERILATOR_VERSION }}, Accellera UVM 2020.3.1)'
+            echo '```'
+            grep -E '^(PASS|FAIL) ' build-uvm.log
+            grep -h '\[COV\]' build/logs/uvm_npu_full_test.log | sed 's/.*\[COV\] *//'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload UVM logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uvm-logs
           path: build/logs/
           if-no-files-found: ignore

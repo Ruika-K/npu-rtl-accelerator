@@ -1,0 +1,69 @@
+name: ASIC
+
+# RTL to GDS on SKY130 with LibreLane (OpenROAD, Magic, Netgen, KLayout).
+# Long-running, so it runs on changes under asic/ and on demand, not on every push.
+on:
+  push:
+    paths:
+      - "asic/**"
+      - ".github/workflows/asic.yml"
+  workflow_dispatch:
+    inputs:
+      design:
+        description: "Design directory under asic/"
+        default: "conv_engine"
+
+jobs:
+  librelane:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    env:
+      LIBRELANE: github:librelane/librelane/3.0.17
+      DESIGN: ${{ github.event.inputs.design || 'conv_engine' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix with the LibreLane binary cache
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            extra-substituters = https://nix-cache.fossi-foundation.org
+            extra-trusted-public-keys = nix-cache.fossi-foundation.org:3+K59iFwXqKsL7BNu6Guy0v+uTlwsxYQxjspXzqLYQs=
+
+      - name: Cache the SKY130 PDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.ciel
+          key: ciel-sky130-librelane-3.0.17
+
+      - name: LibreLane flow
+        run: |
+          nix develop "$LIBRELANE" --command librelane --run-tag ci "asic/$DESIGN/config.json"
+
+      - name: Summary
+        if: always()
+        run: |
+          RUN="asic/$DESIGN/runs/ci"
+          if [ -f "$RUN/final/metrics.json" ]; then
+            {
+              echo "## $DESIGN on SKY130 (LibreLane 3.0.17)"
+              python3 asic/summary.py "$RUN" --markdown || true
+            } >> "$GITHUB_STEP_SUMMARY"
+            python3 asic/summary.py "$RUN"
+          else
+            echo "no final metrics; the flow stopped early" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asic-${{ env.DESIGN }}
+          path: |
+            asic/${{ env.DESIGN }}/runs/ci/final/
+            asic/${{ env.DESIGN }}/runs/ci/resolved.json
+            asic/${{ env.DESIGN }}/runs/ci/*/*.log
+            asic/${{ env.DESIGN }}/runs/ci/*/reports/
+          if-no-files-found: ignore

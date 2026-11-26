@@ -1,0 +1,17 @@
+{
+  "DESIGN_NAME": "conv_engine",
+  "VERILOG_FILES": [
+    "dir::../../rtl/npu_pkg.sv",
+    "dir::../../rtl/compute/pe.sv",
+    "dir::../../rtl/compute/systolic_array.sv",
+    "dir::../../rtl/compute/requant_unit.sv",
+    "dir::../../rtl/compute/conv_engine.sv"
+  ],
+  "USE_SLANG": true,
+  "CLOCK_PORT": "clk_i",
+  "CLOCK_PERIOD": 25,
+  "FP_CORE_UTIL": 45,
+  "PL_TARGET_DENSITY_PCT": 55,
+  "PDK": "sky130A",
+  "STD_CELL_LIBRARY": "sky130_fd_sc_hd"
+}

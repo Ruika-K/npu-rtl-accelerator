@@ -30,7 +30,9 @@ This file is the working agreement for every change in this repository.
 
 ## Testbench conventions
 
-- Stay within the SystemVerilog subset Verilator 5 supports: procedural testbenches, queues, `$fopen` / `$fscanf`; no classes, no UVM.
+- Outside `tb/uvm/`, stay within the SystemVerilog subset Verilator 5 supports: procedural testbenches, queues,
+  `$fopen` / `$fscanf`; no classes, no UVM. `tb/uvm/` is full SystemVerilog UVM (common subset of UVM 1.2 and
+  IEEE 1800.2) and must pass `make uvm-elab`.
 - Drive stimulus on the falling clock edge with blocking assignments; check on the falling edge. The DUT then samples
   identical values under Verilator and VCS.
 - Every testbench prints exactly one `PASS:` or `FAIL:` line and exits with `$finish` or `$fatal`.

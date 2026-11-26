@@ -93,7 +93,8 @@ Output sizes are computed by hardware: `OUT = IN + 2*PAD - K + 1` (CONV2D), `OUT
 4. Write the input image (int8, already minus 128, CHW) to act_buffer at DESC[0].IN_BASE.
 5. Optionally set CTRL.IRQ_EN = 1.
 6. Write CTRL.START = 1.
-7. Wait for `irq_o` or poll STATUS.DONE. Read RESULT and LOGITS; read PERF_* for performance data.
+7. Wait for `irq_o` or poll STATUS until DONE or ERR is set (polling until BUSY clears works as well: the read
+   that shows BUSY clear already shows DONE or ERR). Read RESULT and LOGITS; read PERF_* for performance data.
 8. Write 1 to clear STATUS.DONE. For the next image repeat steps 4, 6, 7 and 8; weights and descriptors stay resident.
 
 Do not write descriptors while STATUS.BUSY is set: the sequencer reads each descriptor word by word when its layer

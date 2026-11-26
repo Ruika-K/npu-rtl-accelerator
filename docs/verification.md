@@ -97,21 +97,27 @@ direction, a program using all 16 descriptors, and a blocked pixel write. Tests 
 (`axil_slave_tb` phase 4, the burst-shape transfers of the DMA phase, the NUM_DESC program in
 `npu_sequencer_tb`); the last became an environment assumption plus a cover in `pix_writer_sva`.
 
-**Do the checks fire?** `tb/sva/mutation_run.py --cocotb` injects one RTL defect at a time and runs three
-detectors on it: the affected SystemVerilog testbench with the assertions, the same testbench without them, and
-the pyuvm environment of section 2.4 without them (its scoreboard only). Of 20 defects:
+**Do the checks fire?** `tb/sva/mutation_run.py --cocotb --uvm` injects one RTL defect at a time and runs four
+detectors on it: the affected SystemVerilog testbench with the assertions, the same testbench without them, the
+pyuvm environment of section 2.4 without them (its scoreboard only), and the SystemVerilog UVM environment of
+section 2.5 without them (`npu_full_test`: register model, scoreboard, AXI rule checks, sequence checks, coverage
+closure). Of 20 defects:
 
 | Detector | Caught | Missed |
 | --- | ---: | --- |
 | SVA checkers (in the SystemVerilog regression) | 19 | the STATUS gap of section 2.4 (its property is bound at `npu_top`; the unit testbench catches it, and the assertion fires in the pyuvm run) |
 | SystemVerilog testbench checks alone | 17 | an extra beat in a padded tile, the pixel grant during a DMA, a pixel write without the grant |
 | pyuvm scoreboard alone | 14 | both FIFO defects and the pixel writer (outside `npu_top`), the per-layer cycle counter (not predicted), the extra beat in a padded tile, the pixel grant during a DMA |
+| SystemVerilog UVM environment alone | 14 | the same six: the pixel port is tied off in its top level, and neither environment predicts cycle counts or the timing of a padded tile |
 
 Every defect is caught by at least one detector, and the three layers miss different things: the assertions see
 interface-contract violations that do not change any result today; the scoreboard checks the bus behaviour a
 host sees, independent of how the tests were written; the procedural testbenches check exact internal timing
 that neither of the others predicts. Four of the scoreboard's catches are test timeouts (the DUT stops
-answering), which is what the per-test simulated-time limit is for.
+answering), which is what the per-test simulated-time limit is for. In the UVM environment the same hangs are
+reported by the handshake watchdogs of its driver and slave memory (`AXIL/HANG`, `AXI/HANG`), and the DMA defects
+by its AXI4 rule checks (`AXI/4K`, `AXI/WLAST`). Verilator 5.052 and later enable assertions by default, so the
+UVM column is built with `--no-assert`.
 
 ### 2.4 cocotb / pyuvm environment for `npu_top` (`tb/cocotb/`, `make cocotb`)
 
@@ -172,8 +178,8 @@ takes every expected value from the golden-model files and puts the register che
 | Component | File | Role |
 | --- | --- | --- |
 | Interfaces | `axil_if.sv`, `axi_if.sv`, `irq_if.sv` | Clocking blocks for the driver, the monitor and the slave memory; idle levels during reset |
-| AXI4-Lite agent | `axil_agent.svh` | `axil_item` with random handshake timing (drawn at creation, see below), sequencer, driver (AW first, W first or both), monitor publishing each completed transaction, and `axil_reg_adapter` (byte enables pass through) |
-| AXI4 slave memory | `axi_slave_mem.svh` | Reactive slave for the DMA: random stalls, one burst per direction, an SLVERR window, a sparse memory with a backdoor; publishes every burst with its data |
+| AXI4-Lite agent | `axil_agent.svh` | `axil_item` with random handshake timing (drawn at creation, see below), sequencer, driver (AW first, W first or both), monitor publishing each completed transaction, a handshake watchdog, and `axil_reg_adapter` (byte enables pass through) |
+| AXI4 slave memory | `axi_slave_mem.svh` | Reactive slave for the DMA: random stalls, one burst per direction, an SLVERR window, a sparse memory with a backdoor; checks the burst rules (64-bit INCR, at most 16 beats, aligned, no 4 KB crossing, WLAST) and has a watchdog inside bursts; publishes every burst with its data |
 | Register model | `npu_reg_model.svh` | Every register and field of `programming_model.md`, the 16 descriptors as register files (W0..W9, fields named as in section 3), act_buffer and weight_buffer as `uvm_mem` |
 | Golden data | `npu_vectors.svh` | Readers for `gen_layer_vectors.py`, `gen_desc_vectors.py` and `program.txt` files; the environment has no model of its own |
 | Scoreboard | `npu_scoreboard.svh` | Expectations posted by the sequences, compared with what the monitors observe: buffer bytes read over AXI4-Lite, register words, bytes the DMA writes to external memory. An expectation never observed fails the test |

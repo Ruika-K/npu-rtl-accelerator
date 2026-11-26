@@ -283,22 +283,24 @@ This is the most important architectural decision in v1.
 - Cost: about 30 s of CI time, three pinned Python packages, and an ambiguity the model must resolve: completion is
   not visible on the bus, so it tracks "maybe busy" until a STATUS read or a successful memory access settles it.
 
-## ADR-021 A SystemVerilog UVM environment fed by golden-model files, elaborated in CI
+## ADR-021 A SystemVerilog UVM environment fed by golden-model files, run on Verilator in CI
 
 - Context: the pyuvm environment (ADR-020) gives the UVM structure in CI, but SystemVerilog UVM with a register
-  model is what a commercial flow uses, and the CI simulator (Verilator 5.020) cannot run it.
+  model is what a commercial flow uses. The packaged Verilator (5.020) cannot run UVM; Verilator 5.052 and later
+  can, on the stock Accellera library.
 - Choice: a SystemVerilog UVM environment for `npu_top` (`tb/uvm/`): agent and adapter, reactive AXI4 slave
   memory, a register model of the whole map with an explicit predictor and `check_on_read`, a scoreboard whose
-  expectations come from the golden-model files, covergroups, the UVM built-in register sequences and five test
-  sequences. CI compiles and elaborates it with slang against the Accellera UVM library; VCS runs it.
+  expectations come from the golden-model files, covergroups with a closure test, the UVM built-in register
+  sequences and five test sequences. It runs on Verilator 5.054, built from source in a separate CI job and
+  cached; slang elaborates it in the main job; `make vcs-uvm` runs it on VCS when one is at hand.
 - Why: the register model takes over register checking from any traffic (the built-in sequences cover reset
   values, every RW bit and every buffer word for free), and the vector files keep one source of truth for
-  expected data without a DPI bridge to Python. slang checks the full language, classes and UVM included, so
-  the environment cannot rot between VCS runs.
+  expected data without a DPI bridge to Python. An open simulator makes the results reproducible by anyone and
+  keeps the tests running on every push; a commercial simulator is optional, not a dependency.
 - Rejected: a DPI-C bridge to the Python model (an embedded interpreter in the simulator for data the vector
   files already hold); a second reference model in SystemVerilog (a third copy of the specification to keep in
-  step); running the tests in CI on Verilator 5.052 or later, the first releases that support UVM (the CI image
-  has no such package, a source build costs minutes per run, and the support is new). That is the next step once
-  a packaged release is available.
-- Cost: until the first VCS run the tests have only been compiled, not executed; the CI check costs a clone of
-  the UVM library and a few seconds.
+  step); depending on VCS for the results (not reproducible, and the only licence at hand is on a third party's
+  server); constraint solving per transaction (Verilator calls an external SMT solver, about 20 ms a call, so
+  handshake timing is drawn with `$urandom` when an item is created).
+- Cost: a Verilator build of about 10 minutes on a cache miss and about 5 minutes of tests per push; the UVM
+  library's HDL backdoor is compiled out (no Verilator backend in the Accellera release, not used here).

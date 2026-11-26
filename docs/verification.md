@@ -162,16 +162,17 @@ the engines drop busy in the cycle they pulse done and the register file set DON
 answered in that cycle missed both. The same gap existed for DMA_STATUS. The register file now includes the
 pulse in the read; `npu_top_sva` checks the property and `npu_regs_tb` has a directed test for it.
 
-### 2.5 SystemVerilog UVM environment for `npu_top` (`tb/uvm/`, `make uvm-elab`, `make vcs-uvm`)
+### 2.5 SystemVerilog UVM environment for `npu_top` (`tb/uvm/`, `make uvm`)
 
-The same DUT in a SystemVerilog UVM environment for a commercial simulator, written to the common subset of
-UVM 1.2 and IEEE 1800.2. Where the pyuvm environment of section 2.4 brings its own reference model, this one
+The same DUT in a SystemVerilog UVM environment on the Accellera UVM library, written to the common subset of
+UVM 1.2 and IEEE 1800.2. It runs on Verilator 5.052 or later (the first releases that run UVM; CI builds
+5.054) and on VCS (`make vcs-uvm`). Where the pyuvm environment of section 2.4 brings its own reference model, this one
 takes every expected value from the golden-model files and puts the register checking into a UVM register model.
 
 | Component | File | Role |
 | --- | --- | --- |
 | Interfaces | `axil_if.sv`, `axi_if.sv`, `irq_if.sv` | Clocking blocks for the driver, the monitor and the slave memory; idle levels during reset |
-| AXI4-Lite agent | `axil_agent.svh` | `axil_item` with randomized handshake timing, sequencer, driver (AW first, W first or both), monitor publishing each completed transaction, and `axil_reg_adapter` (byte enables pass through) |
+| AXI4-Lite agent | `axil_agent.svh` | `axil_item` with random handshake timing (drawn at creation, see below), sequencer, driver (AW first, W first or both), monitor publishing each completed transaction, and `axil_reg_adapter` (byte enables pass through) |
 | AXI4 slave memory | `axi_slave_mem.svh` | Reactive slave for the DMA: random stalls, one burst per direction, an SLVERR window, a sparse memory with a backdoor; publishes every burst with its data |
 | Register model | `npu_reg_model.svh` | Every register and field of `programming_model.md`, the 16 descriptors as register files (W0..W9, fields named as in section 3), act_buffer and weight_buffer as `uvm_mem` |
 | Golden data | `npu_vectors.svh` | Readers for `gen_layer_vectors.py`, `gen_desc_vectors.py` and `program.txt` files; the environment has no model of its own |
@@ -200,14 +201,45 @@ writes only the words whose desired value differs from the mirror.
 - `npu_lenet_test`: weights and images by DMA, descriptors through the register model, completion by interrupt;
   RESULT must equal the integer model's prediction for every image, and for images with TRACE lines every layer
   output (stored to external memory by the DMA) and the logits are compared too.
-- `npu_full_test`: reset values and the four test sequences in one run, the one to merge coverage from.
+- `npu_full_test`: reset values and the four test sequences in one run; it fails unless every covergroup is at
+  100% (functional-coverage closure).
 
-**Status.** CI compiles and elaborates the whole environment with slang (`pyslang`) against Accellera UVM
-2020.3.1, warnings fatal (`make uvm-elab`); it was also elaborated against IEEE 1800.2-2017. Both steps catch type,
-member and covergroup errors (checked by injecting them), not run-time behaviour: the tests themselves need a UVM
-simulator (`make vcs-uvm`, `VCS_UVM=uvm-1.2` or `uvm-ieee-2020`) and have not run yet; results go to the VCS run
-log in `docs/STATUS.md`. The file readers were exercised separately under Verilator on the real vector and
-program files.
+**Running it on Verilator.** `make uvm` compiles the stock Accellera UVM 2020.3.1 with the design, the bound
+checkers and `tb/uvm`, and runs every test (about 5 minutes). Three things were needed:
+
+- The UVM DPI library's HDL backdoor (`uvm_hdl.c`) only has VCS, Questa and Xcelium backends. The environment
+  does not use backdoor access, so it is compiled out (`+define+UVM_HDL_NO_DPI`) and
+  `tb/uvm/uvm_dpi_verilator.cc` builds the rest (command line, regular expressions).
+- Verilator solves `randomize()` with an external SMT solver, about 20 ms a call. The AXI4-Lite items of
+  register and memory accesses have fixed address and data, so their handshake timing is drawn with `$urandom`
+  when the item is created; a solve per transaction would have cost more than the simulation.
+- UVM 1800.2-2020 warns each time the mirror of a volatile field is read, which `check_on_read` does on every
+  STATUS and DMA_STATUS read (128 000 warnings in one test). Those fields are excluded from the compare, so the
+  base test switches that one message off.
+
+Verilator also rejected a declaration with an initializer before `super.new` (IEEE 1800-2023 8.15), which slang
+had accepted.
+
+**What the covergroups found.** The first full run reached 81.9% on `cg_layer`: the layer vectors only ever used
+kernel sizes 1, 3, 5, 7 and padding up to 3, although the descriptor allows K 1..7 and PAD 0..7.
+`gen_layer_vectors.py` now emits every kernel size with padding 0..3 and one above 3 (35 cases); the RTL matched
+the model on all of them in every testbench that reads the vectors, and every covergroup is now at 100%.
+
+**Results** (Verilator 5.054, seed 1):
+
+| Test | Checked |
+| --- | --- |
+| `npu_reg_reset_test`, `npu_reg_bit_bash_test` | Reset value of every register; every RW bit set and cleared on its own (10 812 writes and reads) |
+| `npu_mem_walk_test` | Every word of both buffers (81 918 writes, 40 960 reads) |
+| `npu_layer_test` | 103 layer cases |
+| `npu_desc_err_test` | 732 error vectors, 302 NOP vectors, LAYER_CNT errors, SLVERR accesses |
+| `npu_dma_test` | 33 920 bytes loaded and read back, the same stored and checked on the AXI4 write channel |
+| `npu_lenet_test` | 100 MNIST images: 100 agree with the integer model, 14 layer traces, 16 188 bytes stored by DMA |
+| `npu_full_test` | All of the above in one run, 52 384 buffer bytes, 41 620 external bytes, coverage 100% on all five covergroups |
+
+`make uvm-elab` additionally compiles and elaborates the environment with slang (`pyslang`), warnings fatal; it
+was also elaborated against IEEE 1800.2-2017. UVM 1.2 is the version the VCS target defaults to and is not
+checked here.
 
 ## 3. Tools and how to run
 
@@ -217,15 +249,16 @@ program files.
 | VCS | Additional run of the same filelists, recorded in `docs/STATUS.md` | Separate machine available to the author |
 | Python 3 + numpy | Golden model, vector generation | Local, GitHub Actions |
 | cocotb 1.9, pyuvm, cocotb-coverage | Class-based environment for `npu_top` with functional coverage (section 2.4) | Local, GitHub Actions |
-| slang (pyslang 12.2), Accellera UVM 2020.3.1 | Compile and elaboration check of the SystemVerilog UVM environment (section 2.5) | Local, GitHub Actions |
-| VCS with UVM 1.2 or IEEE 1800.2 | Runs the SystemVerilog UVM tests (section 2.5) | Separate machine available to the author |
+| Verilator 5.054 (built from source), Accellera UVM 2020.3.1 | SystemVerilog UVM tests (section 2.5) | Local, GitHub Actions (`uvm` job) |
+| slang (pyslang 12.2) | Compile and elaboration check of the SystemVerilog UVM environment | Local, GitHub Actions |
+| VCS with UVM 1.2 or IEEE 1800.2 | Optional second simulator for the UVM tests (`make vcs-uvm`) | Not required |
 | PyTorch | Training only, not in CI | Local, optional |
 
 Constraints:
 
 - The unit and integration testbenches use the SystemVerilog subset Verilator supports: procedural testbenches,
   queues, `$readmemh`, `$fopen` / `$fscanf`; no classes and no UVM. The class-based environments are the pyuvm
-  one of section 2.4, which runs in CI, and the SystemVerilog UVM one of section 2.5, which CI elaborates.
+  one of section 2.4 and the SystemVerilog UVM one of section 2.5; both run in CI.
 - Shared reference functions live in `tb/common/npu_tb_pkg.sv` and correspond one to one with `model/npu_ref.py`.
 - Stimulus is driven on the falling clock edge with blocking assignments, and checks happen on the falling edge too.
   The DUT then samples identical values under Verilator and VCS, avoiding the semantic difference of non-blocking
@@ -236,6 +269,8 @@ Constraints:
 - `make lint`, `make model-test`, `make unit`, `make integ`, `make cocotb`, `make uvm-elab` and `make cover` make
   up `make ci`, which GitHub Actions runs in full. `make cocotb` needs the Python packages of
   `tb/cocotb/requirements.txt`, `make uvm-elab` those of `tb/uvm/requirements.txt` (it fetches the UVM library).
+  `make uvm` needs Verilator 5.052 or later and is a separate CI job (`uvm`), which builds Verilator 5.054 once
+  and keeps it in the Actions cache; `make ci` stays runnable with the packaged Verilator.
 - RTL lint is `-Wall` with warnings fatal; testbench builds tolerate warnings, but known checker-style warnings are
   annotated with a local `lint_off` and a reason.
 - Coverage: functional scenarios are cover properties in `tb/sva` with a closure check (section 2.3); code

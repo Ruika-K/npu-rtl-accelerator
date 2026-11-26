@@ -26,7 +26,8 @@ reproduce with open-source tools.
   SystemVerilog assertions are bound to the RTL in every testbench, and CI fails if one of their cover
   properties is never reached. A pyuvm environment (agent, scoreboard with a register-level reference model,
   functional coverage closed in CI) drives `npu_top` with random layers, programs, errors and DMA transfers, and a
-  SystemVerilog UVM environment with a register model, elaborated in CI, targets VCS
+  SystemVerilog UVM environment (register model with the UVM built-in register sequences, golden-vector
+  scoreboard, covergroups closed at 100%) runs on open-source Verilator in CI, MNIST included
   ([docs/verification.md](docs/verification.md)).
 
 ## Repository layout
@@ -69,6 +70,10 @@ make ci                 # lint + Python self-test + unit testbenches + both netw
 
 ```sh
 make unit-requant_unit  # one unit testbench
+```
+
+```sh
+make uvm VERILATOR_UVM=/path/to/verilator   # SystemVerilog UVM tests, Verilator 5.052 or later
 ```
 
 ```sh

@@ -10,8 +10,8 @@ closure on the open ECP5 flow raised the worst of three placement seeds from 40.
 RTL with cover-property closure in CI (ADR-019). Step 2 (merged) added a pyuvm environment for `npu_top` with a
 register-level reference model and functional-coverage closure (ADR-020); it found and fixed a one-cycle gap in
 which STATUS showed neither BUSY nor DONE. Step 3 (branch `feat/sv-uvm`) adds a SystemVerilog UVM environment with
-a register model for VCS, compiled and elaborated with slang in CI (ADR-021); its tests have not run on a UVM
-simulator yet. M8 is the RTL-to-GDS flow.
+a register model, run on open-source Verilator 5.054 in CI (ADR-021): eight tests pass, every covergroup at 100%.
+M8 is the RTL-to-GDS flow.
 
 ## Completed
 
@@ -121,12 +121,14 @@ simulator yet. M8 is the RTL-to-GDS flow.
   - RTL fix: STATUS / DMA_STATUS include the done / err pulse of the read cycle; `npu_top_sva` checks status
     coherence, `npu_regs_tb` sweeps the end of a run over a STATUS read.
   - `tb/sva/mutation_run.py --cocotb`: the three detectors compared on 20 injected defects.
-- M7, step 3 (2026-11-26, compiled and elaborated; not yet simulated):
+- M7, step 3 (2026-11-26):
   - `tb/uvm/`: SystemVerilog UVM environment for `npu_top`: AXI4-Lite agent and register adapter, reactive AXI4
     slave memory, register model of the whole map (descriptor register files, both buffers as `uvm_mem`) with an
     explicit predictor and check-on-read, scoreboard fed by the golden-model files, five covergroups, eight
     tests (UVM built-in reset / bit-bash / memory-walk, layers, descriptor errors, DMA, MNIST, all in one).
-  - `make uvm-elab` (slang against Accellera UVM 2020.3.1) in `make ci` and CI; `make vcs-uvm` runs the tests.
+  - `make uvm` (Verilator 5.052+, stock Accellera UVM 2020.3.1) as its own CI job with a cached Verilator 5.054
+    build; `make uvm-elab` (slang) in `make ci`; `make vcs-uvm` for VCS.
+  - `gen_layer_vectors.py`: every kernel size with every padding class, a gap the covergroups exposed.
 
 ## Milestone plan
 
@@ -138,7 +140,7 @@ simulator yet. M8 is the RTL-to-GDS flow.
 | M4 | Memories, `conv_engine`, `pool_engine`, `argmax_engine`, `npu_top`; single layers bit-exact | Done |
 | M5 | LeNet-5 end to end on MNIST and CIFAR-10, training and quantization scripts, CI green, README performance table | Done |
 | M6 | Synthesis flow and numbers, `chip_top` (CDC / APB bridge / clock gating), AXI4 master DMA | Done |
-| M7 | Verification hardening: SVA checkers and cover closure, cocotb / pyuvm environment with functional coverage, SystemVerilog UVM environment | Steps 1 to 3 done; UVM tests to be run on VCS |
+| M7 | Verification hardening: SVA checkers and cover closure, cocotb / pyuvm environment with functional coverage, SystemVerilog UVM environment | Done |
 | M8 | RTL to GDS on SKY130 with the open flow (ASIC memory configuration, SRAM macros, DRC / LVS, frequency / area / power) | Planned |
 
 ## Verification evidence
@@ -206,6 +208,8 @@ simulator yet. M8 is the RTL-to-GDS flow.
 | 2026-11-26 | Verilator 5.020 | `make clean && make ci` with the pyuvm environment | All SystemVerilog testbenches, both networks and the pyuvm tests pass; cover properties 78 of 78 over 17 runs; 190 s |
 | 2026-11-26 | pyslang 12.2.0, Accellera UVM 2020.3.1 | `make uvm-elab` | `tb/uvm` with RTL and SVA checkers: 0 errors, 0 warnings; also 0 / 0 against IEEE 1800.2-2017. Injected type, member and covergroup errors are reported |
 | 2026-11-26 | Verilator 5.020 | `npu_vectors.svh` readers on the real files (UVM stubbed) | 68 layer cases with packed descriptors equal to `desc_pack`, 2000 descriptor vectors, MNIST program: 8 layers, 16208 weight words, 100 images, 7 traces on image 0 |
+| 2026-11-26 | Verilator 5.054 (source build), Accellera UVM 2020.3.1 | `make uvm` | 8 of 8 tests pass: reset values, bit-bash, memory walk of both buffers, 103 layer cases, 732 error and 302 NOP descriptor vectors, 33920 DMA bytes each way, 100 MNIST images agree with the integer model; `npu_full_test` coverage 100% on all five covergroups; about 5 minutes |
+| 2026-11-26 | Verilator 5.054 | First full UVM run | `cg_layer` at 81.9%: the layer vectors never used kernel sizes 2, 4, 6 or padding above 3. 35 directed cases added; `npu_top_tb` (103 cases), `conv_engine_tb` (75) and the UVM tests match the model on all of them |
 | 2026-11-26 | Verilator 5.020, cocotb | `mutation_run.py --cocotb`, 20 defects | SVA checkers 19, SystemVerilog testbenches alone 17, pyuvm scoreboard alone 14; every defect caught by at least one (details in `docs/verification.md` 2.3) |
 | 2026-11-04 | Yosys 0.33, nextpnr-ecp5 0.6 (GitHub Actions) | Three-seed sweep of `main` (`5cc8e3d`) | 56.2 / 45.9 / 40.4 MHz, three different critical paths |
 | 2026-11-04 | Verilator 5.020 | Registered pool write port, channel mask in the tile queue, two-stage requant multiply: unit testbenches, `make clean && make ci` | PASS; mutations (early capture, off-by-one mask, signed low half) fail; cycle counts unchanged |
@@ -221,18 +225,16 @@ simulator yet. M8 is the RTL-to-GDS flow.
 
 ## Next steps
 
-1. Run `make vcs-uvm` on VCS (`VCS_UVM=uvm-1.2` or `uvm-ieee-2020`) and record each test and the coverage
-   report in the VCS run log below; fix what the first run finds.
-2. Run the unit and integration testbenches with VCS and record the results in the table below (the filelists
-   include `tb/sva`).
-3. Once a packaged Verilator with UVM support (5.052 or later) is available to CI, run the UVM tests there too.
-4. M8: RTL to GDS on SKY130.
-5. Timing, if more is wanted: physical measures only (`docs/synthesis.md`).
+1. M8: RTL to GDS on SKY130.
+2. Optional: the UVM tests on Vivado XSim (free, UVM 1.2) or VCS as a second simulator.
+3. Timing, if more is wanted: physical measures only (`docs/synthesis.md`).
 
 ## Known limitations
 
-- The open flow is Verilator; a commercial simulator (VCS) is available to the author on a separate machine and is used
-  as an additional check only. Results are recorded here; no files are transferred from that machine.
+- The open flow is Verilator (5.020 packaged, 5.054 built from source for UVM); a commercial simulator is not
+  required for any result in this repository.
+- The SystemVerilog UVM environment compiles out the UVM HDL backdoor (no Verilator backend in the Accellera
+  release); nothing in it uses backdoor access.
 - The design is derived from the requirements documented in `docs/`; no third-party proprietary specifications are used.
 
 ## Decision log
@@ -256,7 +258,7 @@ Full reasoning in `docs/decisions.md`; this is an index.
 | 2026-11-05 | Keep every requant unit's copy of the layer constants in ECP5 synthesis (ADR-018) | Merged copies drove eight units from one register; 896 flip-flops buy a local route |
 | 2026-11-11 | Assertions in bound checkers, cover-property closure as a CI gate (ADR-019) | RTL stays free of verification code; unreached scenarios become a measured, failing fact |
 | 2026-11-26 | A pyuvm environment with a register-level reference model driven by the monitor (ADR-020) | UVM structure in CI with the open simulator; checks bus behaviour against the spec, whatever the stimulus |
-| 2026-11-26 | A SystemVerilog UVM environment fed by golden-model files, elaborated with slang in CI (ADR-021) | Register model and built-in register sequences for the commercial flow; one source of expected data; cannot rot between VCS runs |
+| 2026-11-26 | A SystemVerilog UVM environment fed by golden-model files, run on Verilator 5.054 in CI (ADR-021) | Register model and built-in register sequences; one source of expected data; reproducible without a commercial simulator |
 
 ## VCS run log
 

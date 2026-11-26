@@ -108,7 +108,8 @@ def main():
             env = run_cocotb() if with_cocotb else "-"
         finally:
             open(full, "w").write(orig)
-        m = re.search(r"Assertion failed in (\S+): (.*)", log_on)
+        # only the checkers of tb/sva count; a testbench's own final $fatal is reported the same way
+        m = re.search(r"Assertion failed in (\S*\.u_sva\.\S+): (.*)", log_on)
         fired = "%s (%s)" % (m.group(1).split(".")[-1], m.group(2).strip()) if m else "none"
         tb = "passes" if re.search(r"^PASS", log_off, re.M) else ("times out" if log_off == "TIMEOUT" else "fails")
         rows.append((name, target, fired, tb, env))

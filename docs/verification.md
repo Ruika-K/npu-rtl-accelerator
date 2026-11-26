@@ -97,10 +97,21 @@ direction, a program using all 16 descriptors, and a blocked pixel write. Tests 
 (`axil_slave_tb` phase 4, the burst-shape transfers of the DMA phase, the NUM_DESC program in
 `npu_sequencer_tb`); the last became an environment assumption plus a cover in `pix_writer_sva`.
 
-**Do the assertions fire?** `tb/sva/mutation_run.py` injects one RTL defect at a time and runs the affected
-testbench with and without the assertions. In all 19 defects an assertion fails; the testbenches alone catch 16.
-The three that only an assertion sees are interface-contract violations that the surrounding logic happens to
-mask today: an extra beat in a padded tile, the pixel grant during a DMA, a pixel write without the grant.
+**Do the checks fire?** `tb/sva/mutation_run.py --cocotb` injects one RTL defect at a time and runs three
+detectors on it: the affected SystemVerilog testbench with the assertions, the same testbench without them, and
+the pyuvm environment of section 2.4 without them (its scoreboard only). Of 20 defects:
+
+| Detector | Caught | Missed |
+| --- | ---: | --- |
+| SVA checkers (in the SystemVerilog regression) | 19 | the STATUS gap of section 2.4 (its property is bound at `npu_top`; the unit testbench catches it, and the assertion fires in the pyuvm run) |
+| SystemVerilog testbench checks alone | 17 | an extra beat in a padded tile, the pixel grant during a DMA, a pixel write without the grant |
+| pyuvm scoreboard alone | 14 | both FIFO defects and the pixel writer (outside `npu_top`), the per-layer cycle counter (not predicted), the extra beat in a padded tile, the pixel grant during a DMA |
+
+Every defect is caught by at least one detector, and the three layers miss different things: the assertions see
+interface-contract violations that do not change any result today; the scoreboard checks the bus behaviour a
+host sees, independent of how the tests were written; the procedural testbenches check exact internal timing
+that neither of the others predicts. Four of the scoreboard's catches are test timeouts (the DUT stops
+answering), which is what the per-test simulated-time limit is for.
 
 ### 2.4 cocotb / pyuvm environment for `npu_top` (`tb/cocotb/`, `make cocotb`)
 

@@ -41,6 +41,19 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: SystemVerilog UVM environment (slang elaboration)
+        run: |
+          set -o pipefail
+          .venv/bin/pip install --quiet -r tb/uvm/requirements.txt
+          PATH="$PWD/.venv/bin:$PATH" make uvm-elab | tee build/logs/uvm_elab.log
+          {
+            echo '## SystemVerilog UVM environment'
+            echo '```'
+            tail -1 build/logs/uvm_elab.log
+            echo '```'
+            echo 'Compiled and elaborated against Accellera UVM 2020.3.1; the tests run on a UVM simulator (make vcs-uvm).'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Cover-property closure
         run: |
           make cover

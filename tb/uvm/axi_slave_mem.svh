@@ -61,6 +61,19 @@ class axi_slave_mem extends uvm_component;
     return a >= err_lo && a < err_hi;
   endfunction
 
+  // AXI4 rules the DMA must keep (docs/programming_model.md section 7): INCR
+  // bursts of 64-bit beats, at most 16 beats, aligned, never across 4 KB.
+  function void check_burst(string ch, bit [31:0] addr, bit [7:0] len, bit [2:0] size, bit [1:0] burst);
+    if (size != 3'd3 || burst != 2'b01)
+      `uvm_error("AXI/SHAPE", $sformatf("%s: size %0d burst %0d, expected 64-bit INCR", ch, size, burst))
+    if (len > 8'd15)
+      `uvm_error("AXI/LEN", $sformatf("%s: %0d beats at %h, at most 16 allowed", ch, len + 1, addr))
+    if (addr[2:0] != 3'b000)
+      `uvm_error("AXI/ALIGN", $sformatf("%s: address %h not 8-byte aligned", ch, addr))
+    if (addr[31:12] != (addr + 32'(8 * (int'(len) + 1)) - 32'd1) >> 12)
+      `uvm_error("AXI/4K", $sformatf("%s: %0d beats at %h cross a 4 KB boundary", ch, len + 1, addr))
+  endfunction
+
   // ---------------------------------------------------------------- run
   task run_phase(uvm_phase phase);
     vif.slave_idle();
@@ -93,8 +106,7 @@ class axi_slave_mem extends uvm_component;
       do @(vif.slv_cb); while (!vif.slv_cb.awvalid);
       vif.slv_cb.awready <= 1'b0;
       t.write = 1; t.addr = vif.slv_cb.awaddr; t.len = vif.slv_cb.awlen;
-      if (vif.slv_cb.awsize != 3'd3 || vif.slv_cb.awburst != 2'b01)
-        `uvm_error("AXI/AW", $sformatf("unsupported AW size %0d burst %0d", vif.slv_cb.awsize, vif.slv_cb.awburst))
+      check_burst("AW", t.addr, t.len, vif.slv_cb.awsize, vif.slv_cb.awburst);
       err = in_err(t.addr);
       for (int b = 0; b <= int'(t.len); b++) begin
         bit [31:0] a = t.addr + 32'(8 * b);
@@ -139,8 +151,7 @@ class axi_slave_mem extends uvm_component;
       do @(vif.slv_cb); while (!vif.slv_cb.arvalid);
       vif.slv_cb.arready <= 1'b0;
       t.write = 0; t.addr = vif.slv_cb.araddr; t.len = vif.slv_cb.arlen;
-      if (vif.slv_cb.arsize != 3'd3 || vif.slv_cb.arburst != 2'b01)
-        `uvm_error("AXI/AR", $sformatf("unsupported AR size %0d burst %0d", vif.slv_cb.arsize, vif.slv_cb.arburst))
+      check_burst("AR", t.addr, t.len, vif.slv_cb.arsize, vif.slv_cb.arburst);
       err = in_err(t.addr);
       for (int b = 0; b <= int'(t.len); b++) begin
         bit [31:0] a = t.addr + 32'(8 * b);

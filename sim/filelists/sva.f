@@ -1,6 +1,7 @@
 tb/sva/axil_slave_sva.sv
 tb/sva/npu_dma_sva.sv
 tb/sva/requant_unit_sva.sv
+tb/sva/sram_1r1w_sva.sv
 tb/sva/act_buffer_sva.sv
 tb/sva/weight_buffer_sva.sv
 tb/sva/systolic_array_sva.sv

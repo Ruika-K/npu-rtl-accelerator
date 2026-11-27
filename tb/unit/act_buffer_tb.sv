@@ -101,8 +101,8 @@ module act_buffer_tb
   // Rows touched by an N-byte access at address a: a>>3 and possibly +1.
   function automatic bit rows_overlap(input logic [AW-1:0] a, input logic [AW-1:0] b);
     logic [AW-4:0] ra0, ra1, rb0, rb1;
-    ra0 = a[AW-1:3]; ra1 = AW-3'(a[AW-1:3] + 1);
-    rb0 = b[AW-1:3]; rb1 = AW-3'(b[AW-1:3] + 1);
+    ra0 = a[AW-1:3]; ra1 = (AW-3)'(a[AW-1:3] + 1);
+    rb0 = b[AW-1:3]; rb1 = (AW-3)'(b[AW-1:3] + 1);
     return (ra0 == rb0) || (ra0 == rb1) || (ra1 == rb0) || (ra1 == rb1);
   endfunction
 

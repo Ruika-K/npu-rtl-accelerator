@@ -7,11 +7,12 @@
 #   make unit-pe     One unit testbench (unit-<module>)
 #   make integ       Layer cases, the LeNet-5 networks (AXI4-Lite) and chip_top (APB + pixel stream)
 #   make integ-mnist One network (integ-<net>, IMAGES=<n> to limit the images)
+#   make integ-sky130 Layer cases and both networks with the SKY130 SRAM macros (models from VLSIDA/sky130_sram_macros)
 #   make cocotb      pyuvm environment for npu_top (tb/cocotb, needs tb/cocotb/requirements.txt)
 #   make uvm         SystemVerilog UVM environment (tb/uvm), every test (Verilator 5.052+, VERILATOR_UVM)
 #   make uvm-elab    SystemVerilog UVM environment compiled and elaborated with slang
 #   make cover       Cover properties of tb/sva merged over all runs; fails if one was never reached
-#   make ci          lint + model-test + unit + integ + cocotb + uvm-elab + cover (what GitHub Actions runs)
+#   make ci          lint + model-test + unit + integ + integ-sky130 + cocotb + uvm-elab + cover (what GitHub Actions runs)
 #   make synth       sv2v + Yosys (xc7 resources) and nextpnr-ecp5 (Fmax), see synth/README.md
 #
 #   make compile / make run      VCS flow for TOP and FILELIST (commercial simulator)
@@ -66,7 +67,7 @@ VCS_FLAGS ?= -full64 -sverilog -timescale=1ns/1ps -debug_access+all
 
 # lint-%, unit-% and vcs-unit-% are pattern rules; GNU make skips pattern
 # search for .PHONY targets, so they are deliberately not listed here.
-.PHONY: help lint lint-synth-wrapper lint-sva model-test vectors unit integ integ-layers integ-chip cocotb uvm uvm-elab vcs-uvm cover ci synth synth-xilinx synth-ecp5 compile run clean
+.PHONY: help lint lint-synth-wrapper lint-sva model-test vectors unit integ integ-layers integ-chip integ-sky130 cocotb uvm uvm-elab vcs-uvm cover ci synth synth-xilinx synth-ecp5 compile run clean
 
 help:
 	@sed -n '2,18p' Makefile | sed 's/^# \{0,1\}//'
@@ -157,6 +158,33 @@ integ-%: $(BUILD_DIR)/verilator/npu_lenet_tb/npu_lenet_tb
 	    +cov=$(COV_DIR)/integ_$*.dat | tee $(BUILD_DIR)/logs/npu_lenet_$*.log
 	@grep -q '^PASS' $(BUILD_DIR)/logs/npu_lenet_$*.log
 
+# SKY130 memory configuration: the layer cases and both networks with
+# rtl/mem/sky130/sram_1r1w.sv, which builds every buffer from OpenRAM SRAM
+# macros, simulated on the macros' own models (sim/filelists/rtl_sky130.f).
+SKY130_SRAM_REV    ?= 965df150c754fe2b3f93a0bd1f9883eb114279b2
+SKY130_SRAM_MACROS ?= $(abspath $(BUILD_DIR)/sky130_sram_macros)
+export SKY130_SRAM_MACROS
+
+$(SKY130_SRAM_MACROS)/LICENSE:
+	rm -rf $(SKY130_SRAM_MACROS) && mkdir -p $(SKY130_SRAM_MACROS)
+	git -C $(SKY130_SRAM_MACROS) init --quiet
+	git -C $(SKY130_SRAM_MACROS) fetch --quiet --depth 1 https://github.com/VLSIDA/sky130_sram_macros.git $(SKY130_SRAM_REV)
+	git -C $(SKY130_SRAM_MACROS) checkout --quiet FETCH_HEAD
+
+integ-sky130: vectors $(SKY130_SRAM_MACROS)/LICENSE
+	mkdir -p $(BUILD_DIR)/verilator $(BUILD_DIR)/logs
+	$(VERILATOR) $(VERILATOR_SIM_FLAGS) -f sim/filelists/integ_npu_top_sky130.f --top-module npu_top_tb \
+	    --Mdir $(BUILD_DIR)/verilator/sky130_npu_top_tb -o npu_top_tb
+	$(BUILD_DIR)/verilator/sky130_npu_top_tb/npu_top_tb $(PLUSARGS) | tee $(BUILD_DIR)/logs/sky130_npu_top_tb.log
+	@grep -q '^PASS' $(BUILD_DIR)/logs/sky130_npu_top_tb.log
+	$(VERILATOR) $(VERILATOR_SIM_FLAGS) -f sim/filelists/integ_npu_lenet_sky130.f --top-module npu_lenet_tb \
+	    --Mdir $(BUILD_DIR)/verilator/sky130_npu_lenet_tb -o npu_lenet_tb
+	@for n in $(NETS); do \
+	  $(BUILD_DIR)/verilator/sky130_npu_lenet_tb/npu_lenet_tb +program=$(abspath model/data)/$$n/program.txt +images=$(IMAGES) \
+	    | tee $(BUILD_DIR)/logs/sky130_npu_lenet_$$n.log | grep -E '^(PASS|FAIL)'; \
+	  grep -q '^PASS' $(BUILD_DIR)/logs/sky130_npu_lenet_$$n.log || exit 1; \
+	done
+
 # VCS variants of the network tests
 vcs-integ-%: 
 	$(MAKE) compile TOP=npu_lenet_tb FILELIST=sim/filelists/integ_npu_lenet.f
@@ -233,7 +261,7 @@ uvm: vectors $(UVM_SRC)/uvm_pkg.sv
 cover:
 	python3 tb/sva/cover_report.py $(COV_DIR)/*.dat --waivers tb/sva/cover_waivers.txt
 
-ci: lint model-test unit integ cocotb uvm-elab cover
+ci: lint model-test unit integ integ-sky130 cocotb uvm-elab cover
 
 # ---------------------------------------------------------------------------
 # Synthesis (open source: sv2v + yosys, nextpnr-ecp5 for timing), see synth/README.md

@@ -14,17 +14,17 @@ on:
 jobs:
   librelane:
     runs-on: ubuntu-24.04
-    timeout-minutes: 340
+    timeout-minutes: 355
     strategy:
       fail-fast: false
       matrix:
         include:
           - design: conv_engine
-            tag: p25-delay1
-            overrides: -c CLOCK_PERIOD=25 -c "SYNTH_STRATEGY=DELAY 1"
+            tag: p33-mc
+            overrides: -c CLOCK_PERIOD=33
           - design: conv_engine
-            tag: p30-area0
-            overrides: -c CLOCK_PERIOD=30 -c "SYNTH_STRATEGY=AREA 0"
+            tag: p30-mc
+            overrides: -c CLOCK_PERIOD=30
     env:
       LIBRELANE: github:librelane/librelane/3.0.17
       RUN: asic/${{ matrix.design }}/runs/${{ matrix.tag }}

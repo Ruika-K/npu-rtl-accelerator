@@ -2,24 +2,32 @@ name: ASIC
 
 # RTL to GDS on SKY130 with LibreLane (OpenROAD, Magic, Netgen, KLayout).
 # Long-running, so it runs on changes under asic/ and on demand, not on every push.
+# Each matrix entry is one run of the same design with a different clock target
+# and synthesis strategy.
 on:
   push:
     paths:
       - "asic/**"
       - ".github/workflows/asic.yml"
   workflow_dispatch:
-    inputs:
-      design:
-        description: "Design directory under asic/"
-        default: "conv_engine"
 
 jobs:
   librelane:
     runs-on: ubuntu-24.04
     timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - design: conv_engine
+            tag: p25-delay1
+            overrides: -c CLOCK_PERIOD=25 -c "SYNTH_STRATEGY=DELAY 1"
+          - design: conv_engine
+            tag: p30-area0
+            overrides: -c CLOCK_PERIOD=30 -c "SYNTH_STRATEGY=AREA 0"
     env:
       LIBRELANE: github:librelane/librelane/3.0.17
-      DESIGN: ${{ github.event.inputs.design || 'conv_engine' }}
+      RUN: asic/${{ matrix.design }}/runs/${{ matrix.tag }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -39,15 +47,15 @@ jobs:
 
       - name: LibreLane flow
         run: |
-          nix develop "$LIBRELANE" --command librelane --run-tag ci "asic/$DESIGN/config.json"
+          nix develop "$LIBRELANE" --command \
+            librelane --run-tag "${{ matrix.tag }}" ${{ matrix.overrides }} "asic/${{ matrix.design }}/config.json"
 
       - name: Summary
         if: always()
         run: |
-          RUN="asic/$DESIGN/runs/ci"
           if [ -f "$RUN/final/metrics.json" ]; then
             {
-              echo "## $DESIGN on SKY130 (LibreLane 3.0.17)"
+              echo "## ${{ matrix.design }} ${{ matrix.tag }} on SKY130 (LibreLane 3.0.17)"
               python3 asic/summary.py "$RUN" --markdown || true
             } >> "$GITHUB_STEP_SUMMARY"
             python3 asic/summary.py "$RUN"
@@ -56,14 +64,18 @@ jobs:
             exit 1
           fi
 
+      - name: Timing diagnostics
+        if: always()
+        run: python3 asic/sta_digest.py "$RUN" || true
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: asic-${{ env.DESIGN }}
+          name: asic-${{ matrix.design }}-${{ matrix.tag }}
           path: |
-            asic/${{ env.DESIGN }}/runs/ci/final/
-            asic/${{ env.DESIGN }}/runs/ci/resolved.json
-            asic/${{ env.DESIGN }}/runs/ci/*/*.log
-            asic/${{ env.DESIGN }}/runs/ci/*/reports/
+            ${{ env.RUN }}/final/gds/
+            ${{ env.RUN }}/final/metrics.*
+            ${{ env.RUN }}/resolved.json
+            ${{ env.RUN }}/*-openroad-stapostpnr/
           if-no-files-found: ignore
